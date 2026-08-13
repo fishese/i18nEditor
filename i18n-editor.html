@@ -183,6 +183,10 @@
   .grid-wrap {
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     overflow: auto; box-shadow: var(--shadow-sm);
+    max-height: calc(100vh - 220px);
+  }
+  tr.virt-spacer td {
+    padding: 0; border: none; line-height: 0; font-size: 0;
   }
   table.i18n-grid { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; }
   .i18n-grid col.col-key { width: 260px; }
@@ -1335,6 +1339,9 @@ if (typeof window !== 'undefined') {
   let filterMode = 'all'; // all | missing | edited
   let searchQuery = '';
   const collapsedGroups = new Set();
+  const heightCache = new Map();
+  let searchTimer = null;
+  let gridScrollBound = false;
   let pendingDownloadedOutputs = [];
   let validationReturnFocus = null;
 
@@ -1453,10 +1460,6 @@ if (typeof window !== 'undefined') {
   }
 
   // ---------------------------------------------------------------- grid
-  function groupOf(path) {
-    const segs = P.splitPath(path);
-    return segs.length > 1 ? segs[0] : null;
-  }
   function labelSegments(path) {
     const segs = P.splitPath(path);
     return segs.length > 1 ? segs.slice(1) : segs;
@@ -1501,17 +1504,125 @@ if (typeof window !== 'undefined') {
     }
   }
 
-  function renderGrid() {
-    const wrap = document.getElementById('grid-wrap');
-    wrap.innerHTML = '';
-    const units = state.units;
-    if (!units.length) return;
-    const growQueue = [];
+  function rowCacheKey(row) {
+    return row.type === 'group' ? `g:${row.group}` : `k:${row.path}`;
+  }
 
+  function spacerRow(height, colSpan) {
+    const tr = document.createElement('tr');
+    tr.className = 'virt-spacer';
+    const td = document.createElement('td');
+    td.colSpan = colSpan;
+    td.style.height = `${height}px`;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function renderGroupRow(group, units) {
+    const gRow = document.createElement('tr');
+    gRow.className = 'group-row' + (collapsedGroups.has(group) ? ' collapsed' : '');
+    gRow.dataset.groupHeader = group;
+    const gTd = document.createElement('td');
+    gTd.colSpan = units.length + 1;
+    gTd.appendChild(el('span', 'chev', '▾'));
+    gTd.appendChild(document.createTextNode(group));
+    gRow.appendChild(gTd);
+    gRow.addEventListener('click', () => {
+      if (collapsedGroups.has(group)) collapsedGroups.delete(group); else collapsedGroups.add(group);
+      renderGrid();
+    });
+    return gRow;
+  }
+
+  function renderKeyRow(path, units, renderablePaths, growQueue) {
+    const tr = document.createElement('tr');
+    tr.dataset.path = path;
+    const keyTd = document.createElement('td');
+    keyTd.className = 'key-cell';
+    const keyPath = el('div', 'key-path');
+    const segs = labelSegments(path);
+    if (segs.length > 1) {
+      keyPath.appendChild(el('span', 'seg-muted', segs.slice(0, -1).join('.') + '.'));
+    }
+    keyPath.appendChild(el('span', 'seg-leaf', segs[segs.length - 1]));
+    keyTd.appendChild(keyPath);
+    const bar = el('div', 'completeness');
+    units.forEach(u => {
+      const cell = App.getCell(state, u, path);
+      bar.appendChild(el('i', cell.kind === 'missing' ? 'miss' : 'ok'));
+    });
+    keyTd.appendChild(bar);
+    tr.appendChild(keyTd);
+    units.forEach(u => {
+      const td = document.createElement('td');
+      td.className = 'value-cell';
+      const cell = App.getCell(state, u, path);
+      if (cell.kind === 'string' || cell.kind === 'missing') {
+        const ta = document.createElement('textarea');
+        ta.className = 'cell-textarea' + (cell.dirty ? ' dirty' : '') + (cell.kind === 'missing' ? ' is-missing' : '');
+        ta.rows = 1;
+        ta.value = cell.kind === 'string' ? cell.value : '';
+        if (cell.kind === 'missing') ta.placeholder = 'Add translation…';
+        ta.spellcheck = true;
+        ta.addEventListener('input', () => {
+          autoGrow(ta);
+          const original = App.flatForUnit(u)[path];
+          if (original && original.kind === 'string' && ta.value === original.node.value) {
+            App.clearCell(state, u.id, path);
+            ta.classList.remove('dirty');
+          } else {
+            App.setCell(state, u.id, path, ta.value);
+            ta.classList.add('dirty');
+          }
+          ta.classList.toggle('is-missing', !ta.value && !App.getCell(state, u, path).existedBefore);
+          updateFooter();
+          updateGridMetrics(units, renderablePaths, path, tr);
+          heightCache.set(rowCacheKey({ type: 'key', path }), tr.getBoundingClientRect().height);
+        });
+        ta.addEventListener('focus', () => setRowFocus(tr));
+        td.appendChild(ta);
+        growQueue.push(ta);
+      } else if (cell.kind === 'array') {
+        const box = el('div', 'cell-readonly');
+        box.appendChild(el('span', 'tag', 'Array'));
+        box.appendChild(document.createElement('br'));
+        box.appendChild(document.createTextNode(cell.raw.raw));
+        td.appendChild(box);
+      } else if (cell.kind === 'empty-object') {
+        const box = el('div', 'cell-readonly');
+        box.appendChild(el('span', 'tag', 'Empty group'));
+        td.appendChild(box);
+      } else {
+        const box = el('div', 'cell-readonly');
+        box.appendChild(el('span', 'tag', 'Complex value'));
+        box.appendChild(document.createElement('br'));
+        box.appendChild(document.createTextNode(cell.raw));
+        td.appendChild(box);
+      }
+      tr.appendChild(td);
+    });
+    tr.addEventListener('click', (ev) => { if (ev.target === tr || ev.target.closest('td.key-cell')) setRowFocus(tr); });
+    return tr;
+  }
+
+  function renderGrid(opts) {
+    const keepScroll = !!(opts && opts.keepScroll);
+    const wrap = document.getElementById('grid-wrap');
+    const units = state.units;
+    if (!units.length) { wrap.innerHTML = ''; return; }
+
+    const prevScroll = wrap.scrollTop;
     const allPaths = App.computeUnionPaths(units);
     const renderablePaths = App.filterRenderablePaths(units, allPaths);
     const visiblePaths = renderablePaths.filter(p => rowMatchesSearch(p, units) && rowMatchesFilter(p, units));
+    const rows = App.listGridRows(visiblePaths, collapsedGroups);
+    const heights = rows.map(row => heightCache.get(rowCacheKey(row)) || App.DEFAULT_ROW_HEIGHT);
+    const win = App.computeVisibleWindow(heights, keepScroll ? prevScroll : 0, wrap.clientHeight || 600, App.GRID_OVERSCAN);
+    const slice = rows.slice(win.startIndex, win.endIndex);
+    const growQueue = [];
+    const colSpan = units.length + 1;
 
+    wrap.innerHTML = '';
     const table = document.createElement('table');
     table.className = 'i18n-grid';
     const colgroup = document.createElement('colgroup');
@@ -1539,113 +1650,32 @@ if (typeof window !== 'undefined') {
     if (!visiblePaths.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = units.length + 1;
+      td.colSpan = colSpan;
       td.className = 'no-results';
       td.textContent = searchQuery || filterMode !== 'all' ? 'No keys match your search or filter.' : 'No translatable keys found.';
       tr.appendChild(td);
       tbody.appendChild(tr);
+    } else {
+      if (win.padTop) tbody.appendChild(spacerRow(win.padTop, colSpan));
+      slice.forEach(row => {
+        tbody.appendChild(row.type === 'group' ? renderGroupRow(row.group, units) : renderKeyRow(row.path, units, renderablePaths, growQueue));
+      });
+      if (win.padBottom) tbody.appendChild(spacerRow(win.padBottom, colSpan));
     }
-
-    let lastGroup = undefined;
-    visiblePaths.forEach(path => {
-      const group = groupOf(path);
-      if (group !== lastGroup) {
-        lastGroup = group;
-        if (group !== null) {
-          const gRow = document.createElement('tr');
-          gRow.className = 'group-row' + (collapsedGroups.has(group) ? ' collapsed' : '');
-          gRow.dataset.groupHeader = group;
-          const gTd = document.createElement('td');
-          gTd.colSpan = units.length + 1;
-          gTd.appendChild(el('span', 'chev', '▾'));
-          gTd.appendChild(document.createTextNode(group));
-          gRow.appendChild(gTd);
-          gRow.addEventListener('click', () => {
-            if (collapsedGroups.has(group)) collapsedGroups.delete(group); else collapsedGroups.add(group);
-            renderGrid();
-          });
-          tbody.appendChild(gRow);
-        }
-      }
-      const hidden = group !== null && collapsedGroups.has(group);
-      const tr = document.createElement('tr');
-      if (hidden) tr.className = 'row-hidden';
-      if (group !== null) tr.dataset.group = group;
-
-      const keyTd = document.createElement('td');
-      keyTd.className = 'key-cell';
-      const keyPath = el('div', 'key-path');
-      const segs = labelSegments(path);
-      if (segs.length > 1) {
-        keyPath.appendChild(el('span', 'seg-muted', segs.slice(0, -1).join('.') + '.'));
-      }
-      keyPath.appendChild(el('span', 'seg-leaf', segs[segs.length - 1]));
-      keyTd.appendChild(keyPath);
-      const bar = el('div', 'completeness');
-      units.forEach(u => {
-        const cell = App.getCell(state, u, path);
-        bar.appendChild(el('i', cell.kind === 'missing' ? 'miss' : 'ok'));
-      });
-      keyTd.appendChild(bar);
-      tr.appendChild(keyTd);
-
-      units.forEach(u => {
-        const td = document.createElement('td');
-        td.className = 'value-cell';
-        const cell = App.getCell(state, u, path);
-        if (cell.kind === 'string' || cell.kind === 'missing') {
-          const ta = document.createElement('textarea');
-          ta.className = 'cell-textarea' + (cell.dirty ? ' dirty' : '') + (cell.kind === 'missing' ? ' is-missing' : '');
-          ta.rows = 1;
-          ta.value = cell.kind === 'string' ? cell.value : '';
-          if (cell.kind === 'missing') ta.placeholder = 'Add translation…';
-          ta.spellcheck = true;
-          ta.addEventListener('input', () => {
-            autoGrow(ta);
-            const original = App.flatForUnit(u)[path];
-            if (original && original.kind === 'string' && ta.value === original.node.value) {
-              App.clearCell(state, u.id, path);
-              ta.classList.remove('dirty');
-            } else {
-              App.setCell(state, u.id, path, ta.value);
-              ta.classList.add('dirty');
-            }
-            ta.classList.toggle('is-missing', !ta.value && !App.getCell(state, u, path).existedBefore);
-            updateFooter();
-            updateGridMetrics(units, renderablePaths, path, tr);
-          });
-          ta.addEventListener('focus', () => setRowFocus(tr));
-          td.appendChild(ta);
-          growQueue.push(ta);
-        } else if (cell.kind === 'array') {
-          const box = el('div', 'cell-readonly');
-          box.appendChild(el('span', 'tag', 'Array'));
-          box.appendChild(document.createElement('br'));
-          box.appendChild(document.createTextNode(cell.raw.raw));
-          td.appendChild(box);
-        } else if (cell.kind === 'empty-object') {
-          const box = el('div', 'cell-readonly');
-          box.appendChild(el('span', 'tag', 'Empty group'));
-          td.appendChild(box);
-        } else {
-          const box = el('div', 'cell-readonly');
-          box.appendChild(el('span', 'tag', 'Complex value'));
-          box.appendChild(document.createElement('br'));
-          box.appendChild(document.createTextNode(cell.raw));
-          td.appendChild(box);
-        }
-        tr.appendChild(td);
-      });
-      tr.addEventListener('click', (ev) => { if (ev.target === tr || ev.target.closest('td.key-cell')) setRowFocus(tr); });
-      tbody.appendChild(tr);
-    });
     table.appendChild(tbody);
     wrap.appendChild(table);
-    // Size textareas to their content now that they're laid out in the document
-    // (scrollHeight isn't reliable before an element is attached and painted).
+    wrap.scrollTop = keepScroll ? prevScroll : 0;
     growQueue.forEach(autoGrow);
-
+    tbody.querySelectorAll('tr[data-path], tr[data-group-header]').forEach(tr => {
+      const key = tr.dataset.path ? `k:${tr.dataset.path}` : `g:${tr.dataset.groupHeader}`;
+      heightCache.set(key, tr.getBoundingClientRect().height);
+    });
     updateGridMetrics(units, renderablePaths);
+
+    if (!gridScrollBound) {
+      gridScrollBound = true;
+      wrap.addEventListener('scroll', () => { renderGrid({ keepScroll: true }); }, { passive: true });
+    }
   }
 
   function setRowFocus(tr) {
@@ -1745,12 +1775,12 @@ if (typeof window !== 'undefined') {
   function closeValidationOverlay() {
     document.getElementById('validation-overlay').hidden = true;
     pendingDownloadedOutputs = [];
-    renderGrid();
     if (validationReturnFocus && validationReturnFocus.isConnected) validationReturnFocus.focus();
     validationReturnFocus = null;
   }
 
   function renderAll() {
+    heightCache.clear();
     renderSummary();
     renderGrid();
     updateFooter();
@@ -1764,7 +1794,11 @@ if (typeof window !== 'undefined') {
   document.getElementById('file-input').addEventListener('change', (e) => { readFiles(e.target.files, false); e.target.value = ''; });
   document.getElementById('folder-input').addEventListener('change', (e) => { readFiles(e.target.files, true); e.target.value = ''; });
 
-  document.getElementById('search-input').addEventListener('input', (e) => { searchQuery = e.target.value; renderGrid(); });
+  document.getElementById('search-input').addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => renderGrid(), 80);
+  });
   document.querySelectorAll('.filter-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       document.querySelectorAll('.filter-chip').forEach(c => {
