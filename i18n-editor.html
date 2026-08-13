@@ -1342,6 +1342,8 @@ if (typeof window !== 'undefined') {
   const heightCache = new Map();
   let searchTimer = null;
   let gridScrollBound = false;
+  let lastUnitsSig = '';
+  let lastWindowSig = '';
   let pendingDownloadedOutputs = [];
   let validationReturnFocus = null;
 
@@ -1605,11 +1607,43 @@ if (typeof window !== 'undefined') {
     return tr;
   }
 
+  function unitsSignature(units) {
+    return units.map(u => `${u.id}\t${u.lang}`).join('\n');
+  }
+
+  function windowSignature(win, rows) {
+    return `${win.startIndex}:${win.endIndex}:${win.padTop}:${win.padBottom}:${rows.map(rowCacheKey).join('\0')}`;
+  }
+
+  function fillWindowBody(tbody, visiblePaths, win, slice, units, renderablePaths, growQueue, colSpan) {
+    tbody.replaceChildren();
+    if (!visiblePaths.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = colSpan;
+      td.className = 'no-results';
+      td.textContent = searchQuery || filterMode !== 'all' ? 'No keys match your search or filter.' : 'No translatable keys found.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    if (win.padTop) tbody.appendChild(spacerRow(win.padTop, colSpan));
+    slice.forEach(row => {
+      tbody.appendChild(row.type === 'group' ? renderGroupRow(row.group, units) : renderKeyRow(row.path, units, renderablePaths, growQueue));
+    });
+    if (win.padBottom) tbody.appendChild(spacerRow(win.padBottom, colSpan));
+  }
+
   function renderGrid(opts) {
     const keepScroll = !!(opts && opts.keepScroll);
     const wrap = document.getElementById('grid-wrap');
     const units = state.units;
-    if (!units.length) { wrap.innerHTML = ''; return; }
+    if (!units.length) {
+      wrap.innerHTML = '';
+      lastUnitsSig = '';
+      lastWindowSig = '';
+      return;
+    }
 
     const prevScroll = wrap.scrollTop;
     const allPaths = App.computeUnionPaths(units);
@@ -1621,49 +1655,55 @@ if (typeof window !== 'undefined') {
     const slice = rows.slice(win.startIndex, win.endIndex);
     const growQueue = [];
     const colSpan = units.length + 1;
+    const unitSig = unitsSignature(units);
+    const winSig = windowSignature(win, rows);
+    const existingTable = wrap.querySelector('table.i18n-grid');
 
-    wrap.innerHTML = '';
-    const table = document.createElement('table');
-    table.className = 'i18n-grid';
-    const colgroup = document.createElement('colgroup');
-    colgroup.appendChild(el('col', 'col-key'));
-    units.forEach(() => colgroup.appendChild(el('col', 'col-lang')));
-    table.appendChild(colgroup);
-
-    const thead = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    headRow.appendChild(el('th', 'key-col', 'Key'));
-    units.forEach(u => {
-      const th = document.createElement('th');
-      const total = renderablePaths.length;
-      const filled = renderablePaths.filter(p => App.getCell(state, u, p).kind !== 'missing').length;
-      const wrapDiv = el('div', 'lang-th');
-      wrapDiv.appendChild(el('span', 'lang-th-name', u.lang));
-      wrapDiv.appendChild(el('span', 'lang-th-count', `${filled}/${total}`));
-      th.appendChild(wrapDiv);
-      headRow.appendChild(th);
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-
-    const tbody = document.createElement('tbody');
-    if (!visiblePaths.length) {
-      const tr = document.createElement('tr');
-      const td = document.createElement('td');
-      td.colSpan = colSpan;
-      td.className = 'no-results';
-      td.textContent = searchQuery || filterMode !== 'all' ? 'No keys match your search or filter.' : 'No translatable keys found.';
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    } else {
-      if (win.padTop) tbody.appendChild(spacerRow(win.padTop, colSpan));
-      slice.forEach(row => {
-        tbody.appendChild(row.type === 'group' ? renderGroupRow(row.group, units) : renderKeyRow(row.path, units, renderablePaths, growQueue));
-      });
-      if (win.padBottom) tbody.appendChild(spacerRow(win.padBottom, colSpan));
+    if (existingTable && lastUnitsSig === unitSig && lastWindowSig === winSig) {
+      return;
     }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
+
+    const unitsChanged = !existingTable || lastUnitsSig !== unitSig;
+    let table;
+    let tbody;
+    if (unitsChanged) {
+      wrap.innerHTML = '';
+      table = document.createElement('table');
+      table.className = 'i18n-grid';
+      const colgroup = document.createElement('colgroup');
+      colgroup.appendChild(el('col', 'col-key'));
+      units.forEach(() => colgroup.appendChild(el('col', 'col-lang')));
+      table.appendChild(colgroup);
+
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      headRow.appendChild(el('th', 'key-col', 'Key'));
+      units.forEach(u => {
+        const th = document.createElement('th');
+        const total = renderablePaths.length;
+        const filled = renderablePaths.filter(p => App.getCell(state, u, p).kind !== 'missing').length;
+        const wrapDiv = el('div', 'lang-th');
+        wrapDiv.appendChild(el('span', 'lang-th-name', u.lang));
+        wrapDiv.appendChild(el('span', 'lang-th-count', `${filled}/${total}`));
+        th.appendChild(wrapDiv);
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      tbody = document.createElement('tbody');
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+    } else {
+      table = existingTable;
+      tbody = table.querySelector('tbody');
+      if (!tbody) {
+        tbody = document.createElement('tbody');
+        table.appendChild(tbody);
+      }
+    }
+
+    fillWindowBody(tbody, visiblePaths, win, slice, units, renderablePaths, growQueue, colSpan);
     wrap.scrollTop = keepScroll ? prevScroll : 0;
     growQueue.forEach(autoGrow);
     tbody.querySelectorAll('tr[data-path], tr[data-group-header]').forEach(tr => {
@@ -1671,6 +1711,8 @@ if (typeof window !== 'undefined') {
       heightCache.set(key, tr.getBoundingClientRect().height);
     });
     updateGridMetrics(units, renderablePaths);
+    lastUnitsSig = unitSig;
+    lastWindowSig = winSig;
 
     if (!gridScrollBound) {
       gridScrollBound = true;
@@ -1781,6 +1823,7 @@ if (typeof window !== 'undefined') {
 
   function renderAll() {
     heightCache.clear();
+    lastWindowSig = '';
     renderSummary();
     renderGrid();
     updateFooter();
