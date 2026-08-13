@@ -1263,10 +1263,61 @@ if (typeof window !== 'undefined') {
     }
   }
 
+  const GRID_OVERSCAN = 8;
+  const DEFAULT_ROW_HEIGHT = 48;
+
+  function groupOf(path) {
+    const segs = P.splitPath(path);
+    return segs.length > 1 ? segs[0] : null;
+  }
+
+  function listGridRows(paths, collapsedGroups) {
+    const rows = [];
+    let lastGroup = undefined;
+    for (const path of paths) {
+      const group = groupOf(path);
+      if (group !== lastGroup) {
+        lastGroup = group;
+        if (group != null) rows.push({ type: 'group', group });
+      }
+      if (group != null && collapsedGroups.has(group)) continue;
+      rows.push({ type: 'key', path });
+    }
+    return rows;
+  }
+
+  function computeVisibleWindow(heights, scrollTop, viewportHeight, overscan) {
+    const n = heights.length;
+    const y0 = Math.max(0, scrollTop);
+    const y1 = y0 + Math.max(0, viewportHeight);
+    let acc = 0;
+    let start = 0;
+    for (let i = 0; i < n; i++) {
+      const next = acc + heights[i];
+      if (next > y0) { start = i; break; }
+      acc = next;
+      start = i + 1;
+    }
+    start = Math.max(0, start - overscan);
+    let padTop = 0;
+    for (let i = 0; i < start; i++) padTop += heights[i];
+    let end = start;
+    let y = padTop;
+    while (end < n && y < y1) {
+      y += heights[end];
+      end++;
+    }
+    end = Math.min(n, end + overscan);
+    let padBottom = 0;
+    for (let i = end; i < n; i++) padBottom += heights[i];
+    return { startIndex: start, endIndex: end, padTop, padBottom };
+  }
+
   const I18nApp = {
     inferLangFromFilename, shouldSkipPath, ingestFile, deriveUnitsForFile, flatForUnit,
     computeUnionPaths, filterRenderablePaths, pickBackboneUnit, detectPredominantQuote, getCell, setCell, clearCell,
     countDirty, computeFileOutput, computeAllOutputs, downloadFileName, commitFileSave, nextId,
+    GRID_OVERSCAN, DEFAULT_ROW_HEIGHT, groupOf, listGridRows, computeVisibleWindow,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = I18nApp;

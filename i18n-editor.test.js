@@ -14,17 +14,14 @@ function loadModules() {
   const Parser = parserModule.exports;
 
   const appModule = { exports: {} };
-  const appContext = {
-    module: appModule,
-    exports: appModule.exports,
-    require(specifier) {
-      if (specifier === './parser') return Parser;
-      throw new Error(`Unexpected require: ${specifier}`);
-    },
-    console,
-  };
-  appContext.global = appContext;
-  vm.runInNewContext(scripts[1], appContext);
+  const loadApp = new Function(
+    'module', 'exports', 'require', 'global',
+    `${scripts[1]}\n//# sourceURL=i18n-app.js`,
+  );
+  loadApp(appModule, appModule.exports, (specifier) => {
+    if (specifier === './parser') return Parser;
+    throw new Error(`Unexpected require: ${specifier}`);
+  }, global);
   return { Parser, App: appModule.exports };
 }
 
@@ -175,4 +172,34 @@ test('commitFileSave preserves a renamed language label', () => {
   App.commitFileSave(state, parsed.file.id, out.newText);
   assert.equal(state.units[0].lang, 'English');
   assert.match(state.files[0].text, /greeting: "Hi"/);
+});
+
+test('listGridRows inserts group headers and omits collapsed keys', () => {
+  const paths = ['nav.home', 'nav.about', 'title', 'footer.copy'];
+  const all = App.listGridRows(paths, new Set());
+  assert.deepEqual(all.map(r => r.type === 'group' ? r.group : r.path), [
+    'nav', 'nav.home', 'nav.about', 'title', 'footer', 'footer.copy',
+  ]);
+  const collapsed = App.listGridRows(paths, new Set(['nav']));
+  assert.deepEqual(collapsed.map(r => r.type === 'group' ? r.group : r.path), [
+    'nav', 'title', 'footer', 'footer.copy',
+  ]);
+});
+
+test('computeVisibleWindow mounts overscan around the viewport', () => {
+  const heights = Array(100).fill(50);
+  const win = App.computeVisibleWindow(heights, 1000, 200, 2);
+  assert.equal(win.startIndex, 18);
+  assert.equal(win.endIndex, 26);
+  assert.equal(win.padTop, 900);
+  assert.equal(win.padBottom, 3700);
+});
+
+test('computeVisibleWindow at top uses overscan below only', () => {
+  const heights = Array(10).fill(40);
+  const win = App.computeVisibleWindow(heights, 0, 80, 8);
+  assert.equal(win.startIndex, 0);
+  assert.equal(win.endIndex, 10);
+  assert.equal(win.padTop, 0);
+  assert.equal(win.padBottom, 0);
 });
