@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,11 +66,29 @@ pub fn read_files(paths: &[(PathBuf, String)]) -> PickResult {
 
 pub fn walk_folder(root: &Path) -> PickResult {
     let mut out = PickResult::default();
-    walk_inner(root, root, &mut out);
+    let mut visited = HashSet::new();
+    walk_inner(root, root, &mut out, &mut visited);
     out
 }
 
-fn walk_inner(root: &Path, dir: &Path, out: &mut PickResult) {
+fn walk_inner(root: &Path, dir: &Path, out: &mut PickResult, visited: &mut HashSet<PathBuf>) {
+    let canonical = match fs::canonicalize(dir) {
+        Ok(p) => p,
+        Err(err) => {
+            out.errors.push(format!(
+                "{}: could not read file ({err})",
+                display_rel(root, dir)
+            ));
+            return;
+        }
+    };
+    if !visited.insert(canonical) {
+        out.errors.push(format!(
+            "{}: skipped already-visited directory (possible symlink cycle)",
+            display_rel(root, dir)
+        ));
+        return;
+    }
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
@@ -87,7 +106,7 @@ fn walk_inner(root: &Path, dir: &Path, out: &mut PickResult) {
             if should_skip_dir(&name) {
                 continue;
             }
-            walk_inner(root, &path, out);
+            walk_inner(root, &path, out, visited);
             continue;
         }
         if should_skip_file(&path) {
@@ -195,5 +214,71 @@ mod tests {
         let missing = write_text(&dir.path().join("nope").join("en.ts"), "x");
         assert!(!missing.ok);
         assert!(missing.error.is_some());
+    }
+
+    fn try_create_dir_link(original: &Path, link: &Path) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link).map_err(|e| e.to_string())
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(original, link).is_ok() {
+                return Ok(());
+            }
+            let status = std::process::Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    &link.to_string_lossy(),
+                    &original.to_string_lossy(),
+                ])
+                .status()
+                .map_err(|e| e.to_string())?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err("symlink_dir and mklink /J failed (privilege or policy)".into())
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (original, link);
+            Err("no directory symlink API on this OS".into())
+        }
+    }
+
+    #[test]
+    fn walk_skips_already_visited_directory_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/en.ts"), "export default { a: \"A\" };").unwrap();
+        let link = root.join("a").join("loop");
+        match try_create_dir_link(&root.join("a"), &link) {
+            Ok(()) => {
+                let result = walk_folder(root);
+                let names: Vec<_> = result
+                    .files
+                    .iter()
+                    .map(|f| f.relative_path.replace('\\', "/"))
+                    .collect();
+                assert_eq!(names, vec!["a/en.ts"]);
+                assert!(
+                    result.errors.iter().any(|e| {
+                        let lower = e.to_ascii_lowercase();
+                        lower.contains("visited") || lower.contains("cycle")
+                    }),
+                    "expected a visited/cycle walk error, got {:?}",
+                    result.errors
+                );
+            }
+            Err(_reason) => {
+                let result = walk_folder(root);
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+                assert_eq!(result.files.len(), 1);
+            }
+        }
     }
 }

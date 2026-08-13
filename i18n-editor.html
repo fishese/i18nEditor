@@ -1347,7 +1347,12 @@ if (typeof window !== 'undefined') {
   let searchTimer = null;
   let gridScrollBound = false;
   let lastUnitsSig = '';
-  let lastWindowSig = '';
+  let lastWin = null;
+  let cachedRows = null;
+  let cachedHeights = null;
+  let cachedVisiblePaths = null;
+  let cachedRenderablePaths = null;
+  let rowCacheKeyStr = '';
   let rendering = false;
   let pendingDownloadedOutputs = [];
   let validationReturnFocus = null;
@@ -1639,8 +1644,43 @@ if (typeof window !== 'undefined') {
     return units.map(u => `${u.id}\t${u.lang}`).join('\n');
   }
 
-  function windowSignature(win, rows) {
-    return `${win.startIndex}:${win.endIndex}:${win.padTop}:${win.padBottom}:${rows.map(rowCacheKey).join('\0')}`;
+  function windowUnchanged(win) {
+    return lastWin
+      && lastWin.startIndex === win.startIndex
+      && lastWin.endIndex === win.endIndex
+      && lastWin.padTop === win.padTop
+      && lastWin.padBottom === win.padBottom;
+  }
+
+  function gridRowsCacheKey(unitSig) {
+    return `${unitSig}\n${searchQuery}\n${filterMode}\n${Array.from(collapsedGroups).sort().join('\0')}`;
+  }
+
+  function refreshCachedHeights() {
+    if (!cachedRows) return;
+    cachedHeights = cachedRows.map(row => heightCache.get(rowCacheKey(row)) || App.DEFAULT_ROW_HEIGHT);
+  }
+
+  function ensureGridRowCache(units, unitSig) {
+    const key = gridRowsCacheKey(unitSig);
+    if (cachedRows && rowCacheKeyStr === key && cachedHeights) return;
+    const allPaths = App.computeUnionPaths(units);
+    const renderablePaths = App.filterRenderablePaths(units, allPaths);
+    const visiblePaths = renderablePaths.filter(p => rowMatchesSearch(p, units) && rowMatchesFilter(p, units));
+    cachedRows = App.listGridRows(visiblePaths, collapsedGroups);
+    cachedVisiblePaths = visiblePaths;
+    cachedRenderablePaths = renderablePaths;
+    cachedHeights = cachedRows.map(row => heightCache.get(rowCacheKey(row)) || App.DEFAULT_ROW_HEIGHT);
+    rowCacheKeyStr = key;
+  }
+
+  function clearGridRowCache() {
+    cachedRows = null;
+    cachedHeights = null;
+    cachedVisiblePaths = null;
+    cachedRenderablePaths = null;
+    rowCacheKeyStr = '';
+    lastWin = null;
   }
 
   function fillWindowBody(tbody, visiblePaths, win, slice, units, renderablePaths, growQueue, colSpan) {
@@ -1672,30 +1712,31 @@ if (typeof window !== 'undefined') {
       try {
         wrap.innerHTML = '';
         lastUnitsSig = '';
-        lastWindowSig = '';
+        clearGridRowCache();
       } finally {
         rendering = false;
       }
       return;
     }
 
+    const unitSig = unitsSignature(units);
+    ensureGridRowCache(units, unitSig);
+
     const prevScroll = wrap.scrollTop;
-    const allPaths = App.computeUnionPaths(units);
-    const renderablePaths = App.filterRenderablePaths(units, allPaths);
-    const visiblePaths = renderablePaths.filter(p => rowMatchesSearch(p, units) && rowMatchesFilter(p, units));
-    const rows = App.listGridRows(visiblePaths, collapsedGroups);
-    const heights = rows.map(row => heightCache.get(rowCacheKey(row)) || App.DEFAULT_ROW_HEIGHT);
-    const win = App.computeVisibleWindow(heights, keepScroll ? prevScroll : 0, wrap.clientHeight || 600, App.GRID_OVERSCAN);
+    const rows = cachedRows;
+    const heights = cachedHeights;
+    const visiblePaths = cachedVisiblePaths;
+    const renderablePaths = cachedRenderablePaths;
+    const win = App.computeVisibleWindow(heights, keepScroll ? wrap.scrollTop : 0, wrap.clientHeight || 600, App.GRID_OVERSCAN);
+    const existingTable = wrap.querySelector('table.i18n-grid');
+
+    if (keepScroll && existingTable && lastUnitsSig === unitSig && windowUnchanged(win)) {
+      return;
+    }
+
     const slice = rows.slice(win.startIndex, win.endIndex);
     const growQueue = [];
     const colSpan = units.length + 1;
-    const unitSig = unitsSignature(units);
-    const winSig = windowSignature(win, rows);
-    const existingTable = wrap.querySelector('table.i18n-grid');
-
-    if (existingTable && lastUnitsSig === unitSig && lastWindowSig === winSig) {
-      return;
-    }
 
     const unitsChanged = !existingTable || lastUnitsSig !== unitSig;
     rendering = true;
@@ -1746,9 +1787,10 @@ if (typeof window !== 'undefined') {
         const key = tr.dataset.path ? `k:${tr.dataset.path}` : `g:${tr.dataset.groupHeader}`;
         heightCache.set(key, tr.getBoundingClientRect().height);
       });
+      refreshCachedHeights();
       updateGridMetrics(units, renderablePaths);
       lastUnitsSig = unitSig;
-      lastWindowSig = winSig;
+      lastWin = { startIndex: win.startIndex, endIndex: win.endIndex, padTop: win.padTop, padBottom: win.padBottom };
 
       if (!gridScrollBound) {
         gridScrollBound = true;
@@ -1874,7 +1916,7 @@ if (typeof window !== 'undefined') {
 
   function renderAll() {
     heightCache.clear();
-    lastWindowSig = '';
+    clearGridRowCache();
     renderSummary();
     renderGrid();
     updateFooter();
@@ -1882,8 +1924,14 @@ if (typeof window !== 'undefined') {
 
   // ---------------------------------------------------------------- wiring
   async function loadViaTauri(cmd) {
-    const batch = await invoke(cmd);
-    ingestLoadedBatch(batch || { files: [], errors: [] });
+    try {
+      const batch = await invoke(cmd);
+      ingestLoadedBatch(batch || { files: [], errors: [] });
+    } catch (err) {
+      const detail = err && err.message ? err.message : String(err);
+      const action = cmd === 'pick_folder' ? 'Load folder' : 'Load files';
+      renderLoadErrors([`${action} failed: ${detail}`]);
+    }
   }
 
   if (tauri) {
@@ -1938,12 +1986,13 @@ if (typeof window !== 'undefined') {
       return;
     }
     const body = document.getElementById('validation-body');
+    body.querySelectorAll('.v-write-error').forEach(node => node.remove());
     let anySucceeded = false;
     const stillPending = [];
     for (const out of pendingDownloadedOutputs) {
       const file = state.files.find(f => f.id === out.fileId);
       if (!file || !file.absolutePath) {
-        const box = el('div', 'v-file v-bad');
+        const box = el('div', 'v-file v-bad v-write-error');
         box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: no original path to write`));
         body.appendChild(box);
         stillPending.push(out);
@@ -1959,7 +2008,7 @@ if (typeof window !== 'undefined') {
         App.commitFileSave(state, out.fileId, out.newText);
         anySucceeded = true;
       } else {
-        const box = el('div', 'v-file v-bad');
+        const box = el('div', 'v-file v-bad v-write-error');
         box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: ${result && result.error ? result.error : 'write failed'}`));
         body.appendChild(box);
         stillPending.push(out);
