@@ -1938,27 +1938,39 @@ if (typeof window !== 'undefined') {
       return;
     }
     const body = document.getElementById('validation-body');
+    let anySucceeded = false;
+    const stillPending = [];
     for (const out of pendingDownloadedOutputs) {
       const file = state.files.find(f => f.id === out.fileId);
       if (!file || !file.absolutePath) {
         const box = el('div', 'v-file v-bad');
         box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: no original path to write`));
         body.appendChild(box);
+        stillPending.push(out);
         continue;
       }
-      const result = await invoke('write_file', { absolutePath: file.absolutePath, text: out.newText });
+      let result;
+      try {
+        result = await invoke('write_file', { absolutePath: file.absolutePath, text: out.newText });
+      } catch (err) {
+        result = { ok: false, error: err && err.message ? err.message : String(err) };
+      }
       if (result && result.ok) {
         App.commitFileSave(state, out.fileId, out.newText);
+        anySucceeded = true;
       } else {
         const box = el('div', 'v-file v-bad');
         box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: ${result && result.error ? result.error : 'write failed'}`));
         body.appendChild(box);
+        stillPending.push(out);
       }
     }
-    pendingDownloadedOutputs = [];
-    document.getElementById('validation-overlay').hidden = true;
-    validationReturnFocus = null;
-    renderAll();
+    pendingDownloadedOutputs = stillPending;
+    if (!stillPending.length) {
+      document.getElementById('validation-overlay').hidden = true;
+      validationReturnFocus = null;
+    }
+    if (anySucceeded) renderAll();
   });
   document.getElementById('validation-overlay').addEventListener('click', (event) => {
     if (event.target === event.currentTarget) closeValidationOverlay();
