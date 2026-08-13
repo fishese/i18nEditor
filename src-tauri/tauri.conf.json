@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.i18neditor.app",
   "build": {
-    "frontendDist": ["../i18n-editor.html"]
+    "frontendDist": ["../index.html"]
   },
   "app": {
     "withGlobalTauri": true,
@@ -14,7 +14,7 @@
         "title": "i18n Editor",
         "width": 1280,
         "height": 860,
-        "url": "i18n-editor.html"
+        "url": "index.html"
       }
     ],
     "security": {

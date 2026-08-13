@@ -111,6 +111,7 @@
 
   /* ---------- Layout ---------- */
   #app-root { padding-bottom: 64px; }
+  body:has(#footer-bar:not([hidden])):has(#site-footer:not([hidden])) #app-root { padding-bottom: 112px; }
   .loaded-view { max-width: 1400px; margin: 0 auto; padding: 16px 20px 0; }
 
   .banner {
@@ -314,6 +315,21 @@
     .footer-right { justify-content: flex-start; }
     .validation-actions { align-items: stretch; flex-direction: column; }
   }
+
+  .site-footer {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 18px;
+    padding: 9px 20px;
+    background: var(--surface); border-top: 1px solid var(--border);
+    font-size: 12.5px; color: var(--ink-muted);
+  }
+  .site-footer a { color: var(--accent); text-decoration: none; }
+  .site-footer a:hover { text-decoration: underline; }
+  .site-footer .sep { color: var(--border-strong); }
+  #footer-bar:not([hidden]) ~ .site-footer { bottom: 52px; }
+  @media (max-width: 720px) {
+    #footer-bar:not([hidden]) ~ .site-footer { bottom: 112px; }
+  }
 </style>
 </head>
 <body>
@@ -392,6 +408,16 @@
       </div>
     </div>
   </div>
+
+  <nav class="site-footer" id="site-footer" aria-label="Downloads and build">
+    <a href="https://github.com/fishese/i18nEditor/releases/latest/download/i18n-editor.exe">Windows portable (.exe)</a>
+    <span class="sep" aria-hidden="true">·</span>
+    <a href="https://github.com/fishese/i18nEditor/releases/latest/download/i18nEditor-0.1.0-x64-setup.exe">Windows installer</a>
+    <span class="sep" aria-hidden="true">·</span>
+    <a href="https://github.com/fishese/i18nEditor#linux">Build the Linux app</a>
+    <span class="sep" aria-hidden="true">·</span>
+    <a href="https://github.com/fishese/i18nEditor">Source</a>
+  </nav>
 
 <script>
 // ===================== Tokenizer =====================
@@ -1335,6 +1361,7 @@ if (typeof window !== 'undefined') {
   const App = window.I18nApp;
   const P = window.I18nParser;
   const tauri = typeof window !== 'undefined' ? window.__TAURI__ : null;
+  if (tauri) document.getElementById('site-footer').hidden = true;
   function invoke(cmd, args) {
     return tauri.core.invoke(cmd, args);
   }

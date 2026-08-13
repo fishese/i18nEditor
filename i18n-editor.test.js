@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 function loadModules() {
-  const html = fs.readFileSync(path.join(__dirname, 'i18n-editor.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match => match[1]);
   assert.ok(scripts.length >= 2, 'expected parser and app script blocks');
 
