@@ -1,0 +1,1783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>i18n Editor — side-by-side translation editing</title>
+<style>
+  :root {
+    --bg: #F1F3F5;
+    --surface: #FFFFFF;
+    --surface-alt: #F8F9FA;
+    --border: #E1E4E9;
+    --border-strong: #C9CDD6;
+    --ink: #1A1D23;
+    --ink-muted: #6B7280;
+    --ink-faint: #9CA3AF;
+    --accent: #1F6F78;
+    --accent-hover: #17565D;
+    --accent-soft: #E4F1F1;
+    --amber: #A9660F;
+    --amber-soft: #FBF0DC;
+    --amber-border: #E8C888;
+    --rose: #B23B3B;
+    --rose-soft: #FAEAEA;
+    --rose-border: #E9B7B7;
+    --green: #2E7D5B;
+    --green-soft: #E7F4EE;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace;
+    --shadow-sm: 0 1px 2px rgba(20, 24, 30, 0.06);
+    --shadow-md: 0 6px 20px rgba(20, 24, 30, 0.10), 0 2px 6px rgba(20,24,30,0.06);
+  }
+
+  * { box-sizing: border-box; }
+  /* The `hidden` attribute must always win over a component's own `display` rule -
+     without `!important` here, .overlay/.footer-bar/.banner's own `display: flex`
+     (needed once shown) silently overrides the browser's default `[hidden]{display:none}`,
+     since same-specificity author CSS beats the user-agent stylesheet regardless of order.
+     That was the exact bug: the validation overlay rendered open on first paint, and
+     toggling the `hidden` attribute back on had no visual effect. */
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font-ui);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+  ::selection { background: var(--accent-soft); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    padding: 10px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-brand { display: flex; align-items: baseline; gap: 8px; }
+  .brand-mark {
+    font-family: var(--font-mono);
+    font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 3px 7px; border-radius: 5px;
+  }
+  .brand-name { font-weight: 600; font-size: 15px; color: var(--ink); }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    appearance: none; border: 1px solid var(--border-strong);
+    background: var(--surface); color: var(--ink);
+    padding: 7px 13px; border-radius: var(--radius-sm);
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.06s ease;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--surface-alt); border-color: var(--ink-faint); }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn-ghost { background: transparent; border-color: transparent; color: var(--ink-muted); }
+  .btn-ghost:hover { background: var(--surface-alt); color: var(--ink); }
+  .btn-lg { padding: 11px 20px; font-size: 14px; border-radius: var(--radius); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-icon {
+    appearance: none; border: none; background: transparent; color: var(--ink-muted);
+    cursor: pointer; font-size: 15px; padding: 4px 8px; border-radius: 5px; line-height: 1;
+  }
+  .btn-icon:hover { background: var(--surface-alt); color: var(--ink); }
+
+  /* ---------- Empty state ---------- */
+  .empty-state { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 130px); padding: 40px 20px; }
+  .empty-state-inner { max-width: 560px; text-align: center; }
+  .empty-state-inner h1 { font-size: 25px; line-height: 1.3; margin-bottom: 14px; letter-spacing: -0.02em; }
+  .empty-state-inner p { color: var(--ink-muted); font-size: 14.5px; line-height: 1.6; margin: 0 0 26px; }
+  .empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .empty-hint { margin-top: 18px; font-size: 12.5px; color: var(--ink-faint); }
+  .empty-hint::before { content: "●  "; color: var(--green); }
+
+  /* ---------- Layout ---------- */
+  #app-root { padding-bottom: 64px; }
+  .loaded-view { max-width: 1400px; margin: 0 auto; padding: 16px 20px 0; }
+
+  .banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 11px 14px; border-radius: var(--radius-sm);
+    font-size: 13px; margin-bottom: 14px; border: 1px solid transparent;
+  }
+  .banner-error { background: var(--rose-soft); border-color: var(--rose-border); color: #7A2A2A; }
+  .banner ul { margin: 4px 0 0; padding-left: 18px; }
+
+  /* ---------- Summary panel ---------- */
+  .summary-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 14px; overflow: hidden;
+  }
+  .summary-toggle {
+    width: 100%; display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 16px; background: transparent; border: none; cursor: pointer;
+    font-size: 13px; color: var(--ink); text-align: left;
+  }
+  .summary-toggle:hover { background: var(--surface-alt); }
+  #summary-headline strong { color: var(--ink); }
+  #summary-headline { color: var(--ink-muted); }
+  .chev { color: var(--ink-faint); transition: transform 0.15s ease; font-size: 11px; }
+  .summary-panel.collapsed .chev { transform: rotate(-90deg); }
+  .summary-panel.collapsed .summary-list { display: none; }
+  .summary-list { border-top: 1px solid var(--border); padding: 4px 16px 14px; }
+  .summary-file { padding: 10px 0; border-bottom: 1px dashed var(--border); }
+  .summary-file:last-child { border-bottom: none; }
+  .summary-file-name { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); font-weight: 600; }
+  .summary-file-mode { font-size: 11.5px; color: var(--ink-faint); margin-left: 8px; }
+  .summary-units { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .unit-chip {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--surface-alt); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 6px 4px 10px;
+  }
+  .unit-chip input {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--accent);
+    border: none; background: transparent; width: 64px; padding: 2px 0;
+  }
+  .unit-chip input:focus { outline: none; border-bottom: 1px solid var(--accent); }
+  .unit-chip .unit-meta { font-size: 11px; color: var(--ink-faint); }
+  .unit-chip .unit-remove {
+    border: none; background: transparent; color: var(--ink-faint); cursor: pointer;
+    font-size: 13px; padding: 2px 4px; border-radius: 50%; line-height: 1;
+  }
+  .unit-chip .unit-remove:hover { background: var(--rose-soft); color: var(--rose); }
+
+  /* ---------- Toolbar ---------- */
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .search-input {
+    flex: 1 1 240px; min-width: 180px;
+    padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+    font-size: 13.5px; background: var(--surface); color: var(--ink);
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .filter-chips { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px; }
+  .filter-chip {
+    border: none; background: transparent; padding: 5px 11px; border-radius: 5px;
+    font-size: 12.5px; font-weight: 500; color: var(--ink-muted); cursor: pointer;
+  }
+  .filter-chip.active { background: var(--accent); color: #fff; }
+  .filter-chip:not(.active):hover { background: var(--surface-alt); color: var(--ink); }
+  .stats-bar { margin-left: auto; font-size: 12.5px; color: var(--ink-muted); white-space: nowrap; }
+  .stats-bar b { color: var(--ink); }
+  .stats-missing { color: var(--amber); font-weight: 600; }
+
+  /* ---------- Grid ---------- */
+  .grid-wrap {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: auto; box-shadow: var(--shadow-sm);
+  }
+  table.i18n-grid { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; }
+  .i18n-grid col.col-key { width: 260px; }
+  .i18n-grid col.col-lang { width: 340px; }
+
+  .i18n-grid thead th {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--surface-alt); border-bottom: 1px solid var(--border);
+    text-align: left; padding: 9px 12px; font-size: 12px; font-weight: 700;
+    color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .i18n-grid thead th.key-col { left: 0; z-index: 11; }
+  .lang-th { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .lang-th-name { font-family: var(--font-mono); color: var(--ink); font-size: 12.5px; text-transform: none; letter-spacing: 0; }
+  .lang-th-count { font-size: 10.5px; color: var(--ink-faint); font-weight: 500; text-transform: none; }
+
+  .group-row td {
+    background: var(--surface-alt); border-bottom: 1px solid var(--border); border-top: 1px solid var(--border);
+    padding: 6px 12px; font-size: 11.5px; font-weight: 700; color: var(--ink-muted);
+    text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; position: sticky; left: 0;
+  }
+  .group-row:hover td { background: #F0F1F3; }
+  .group-row .chev { display: inline-block; margin-right: 6px; font-size: 10px; transition: transform 0.15s ease; }
+  .group-row.collapsed .chev { transform: rotate(-90deg); }
+  tr.row-hidden { display: none; }
+
+  td.key-cell {
+    position: sticky; left: 0; z-index: 5;
+    background: var(--surface); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+    padding: 8px 12px; vertical-align: top;
+  }
+  tr:hover td.key-cell { background: var(--surface-alt); }
+  tr.row-focus td.key-cell, tr.row-focus td.value-cell { background: var(--accent-soft) !important; }
+  .key-path { font-family: var(--font-mono); font-size: 12.5px; word-break: break-word; }
+  .key-path .seg-muted { color: var(--ink-faint); }
+  .key-path .seg-leaf { color: var(--ink); font-weight: 600; }
+  .completeness { display: flex; gap: 2px; margin-top: 6px; }
+  .completeness i { display: block; width: 10px; height: 4px; border-radius: 2px; background: var(--border-strong); }
+  .completeness i.ok { background: var(--green); }
+  .completeness i.miss { background: var(--amber); }
+
+  td.value-cell {
+    border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+    padding: 6px; vertical-align: top;
+  }
+  td.value-cell:last-child { border-right: none; }
+  .cell-textarea {
+    width: 100%; min-height: 36px; resize: none; overflow: hidden;
+    border: 1px solid transparent; border-radius: 6px; padding: 6px 8px;
+    font-family: var(--font-ui); font-size: 13px; color: var(--ink);
+    background: transparent; line-height: 1.45;
+  }
+  .cell-textarea:hover { background: var(--surface-alt); }
+  .cell-textarea:focus { background: var(--surface); border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  .cell-textarea.dirty { background: var(--green-soft); border-color: #BFE3CF; }
+  .cell-textarea.is-missing { background: var(--amber-soft); border-color: var(--amber-border); color: #7A5410; }
+  .cell-textarea.is-missing:focus { background: var(--surface); }
+  .cell-textarea.is-missing::placeholder { color: #B98A3F; }
+
+  .cell-readonly {
+    padding: 7px 8px; border-radius: 6px; font-size: 12.5px; color: var(--ink-muted);
+    background: var(--surface-alt); font-family: var(--font-mono); white-space: pre-wrap; word-break: break-word;
+    border: 1px dashed var(--border-strong);
+  }
+  .cell-readonly .tag { display: inline-block; font-family: var(--font-ui); font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); margin-bottom: 3px; }
+
+  .no-results { padding: 40px 20px; text-align: center; color: var(--ink-muted); font-size: 13.5px; }
+
+  /* ---------- Footer bar ---------- */
+  .footer-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 20px; background: var(--surface); border-top: 1px solid var(--border);
+    box-shadow: 0 -4px 16px rgba(20,24,30,0.06);
+  }
+  .footer-left { font-size: 13px; color: var(--ink-muted); }
+  .footer-left b { color: var(--ink); }
+  .footer-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .download-list { display: flex; gap: 6px; flex-wrap: wrap; }
+  .dl-btn { display: flex; align-items: center; gap: 6px; }
+  .dl-status { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); flex: none; }
+  .dl-status.ok { background: var(--green); }
+  .dl-status.bad { background: var(--rose); }
+  .dl-status.dirty { background: var(--amber); }
+
+  /* ---------- Validation overlay ---------- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50; background: rgba(20,24,30,0.38);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .validation-panel {
+    background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-md);
+    width: 100%; max-width: 640px; max-height: 82vh; display: flex; flex-direction: column;
+  }
+  .validation-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  #validation-body { padding: 16px 20px; overflow-y: auto; }
+  .v-file { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 10px; }
+  .v-file.v-ok { border-color: #CFE8D9; background: var(--green-soft); }
+  .v-file.v-bad { border-color: var(--rose-border); background: var(--rose-soft); }
+  .v-file-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+  .v-file-head .fname { font-family: var(--font-mono); font-weight: 700; }
+  .v-badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+  .v-badge.ok { background: var(--green); color: #fff; }
+  .v-badge.bad { background: var(--rose); color: #fff; }
+  .v-error-detail { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; color: #7A2A2A; white-space: pre-wrap; }
+  .v-changes { margin-top: 8px; font-size: 12px; color: var(--ink-muted); }
+  .v-changes summary { cursor: pointer; color: var(--accent); font-weight: 500; }
+  .v-change-row { display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); font-size: 12px; }
+  .v-change-row .lang { font-family: var(--font-mono); font-weight: 700; color: var(--ink-muted); width: 46px; flex: none; }
+  .v-change-row .path { font-family: var(--font-mono); color: var(--ink); flex: 1; }
+  .v-change-row .old { color: var(--ink-faint); text-decoration: line-through; }
+  .v-change-row .new { color: var(--green); }
+  .validation-actions {
+    padding: 12px 20px 16px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .validation-actions p { margin: 0; color: var(--ink-muted); font-size: 12.5px; }
+
+  @media (max-width: 720px) {
+    #app-root { padding-bottom: 124px; }
+    .topbar { flex-wrap: wrap; }
+    .stats-bar { margin-left: 0; width: 100%; }
+    .footer-bar { flex-direction: column; align-items: stretch; }
+    .footer-right { justify-content: flex-start; }
+    .validation-actions { align-items: stretch; flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark">i18n</span>
+      <span class="brand-name">Translation Editor</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="load-files-btn" class="btn btn-ghost" type="button">Load files</button>
+      <button id="load-folder-btn" class="btn btn-ghost" type="button">Load folder</button>
+      <input type="file" id="file-input" accept=".ts,.tsx,.js,.jsx" multiple hidden>
+      <input type="file" id="folder-input" webkitdirectory directory multiple hidden>
+    </div>
+  </header>
+
+  <main id="app-root">
+    <section id="empty-state" class="empty-state">
+      <div class="empty-state-inner">
+        <h1>Edit translations without touching the code.</h1>
+        <p>Load one combined i18n file or a set of per-language files. Every language lines up
+           side by side so you can compare and edit at once — keys and punctuation stay locked,
+           only the text moves.</p>
+        <div class="empty-actions">
+          <button class="btn btn-primary btn-lg" id="empty-load-files" type="button">Load .ts files</button>
+          <button class="btn btn-ghost btn-lg" id="empty-load-folder" type="button">Load a folder</button>
+        </div>
+        <div class="empty-hint">Runs entirely in this page — nothing is uploaded anywhere.</div>
+      </div>
+    </section>
+
+    <div id="loaded-view" class="loaded-view" hidden>
+      <section id="load-errors-panel" class="banner banner-error" hidden></section>
+
+      <section id="summary-panel" class="summary-panel">
+        <button id="summary-toggle" class="summary-toggle" type="button" aria-expanded="true" aria-controls="summary-list">
+          <span id="summary-headline"></span>
+          <span class="chev">▾</span>
+        </button>
+        <div id="summary-list" class="summary-list"></div>
+      </section>
+
+      <section class="toolbar">
+        <input id="search-input" type="search" placeholder="Search keys or text…" aria-label="Search translation keys or text" class="search-input">
+        <div class="filter-chips" role="tablist" aria-label="Translation filters">
+          <button class="filter-chip active" data-filter="all" type="button" role="tab" aria-selected="true">All</button>
+          <button class="filter-chip" data-filter="missing" type="button" role="tab" aria-selected="false">Missing</button>
+          <button class="filter-chip" data-filter="edited" type="button" role="tab" aria-selected="false">Edited</button>
+        </div>
+        <div id="stats-bar" class="stats-bar" aria-live="polite"></div>
+      </section>
+
+      <section id="grid-wrap" class="grid-wrap"></section>
+    </div>
+  </main>
+
+  <footer id="footer-bar" class="footer-bar" hidden>
+    <div class="footer-left"><span id="dirty-count" aria-live="polite">0 unsaved changes</span></div>
+    <div class="footer-right">
+      <button id="check-all-btn" class="btn btn-ghost" type="button">Check all files</button>
+      <div id="download-list" class="download-list"></div>
+    </div>
+  </footer>
+
+  <div id="validation-overlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="validation-title" hidden>
+    <div class="validation-panel" tabindex="-1">
+      <div class="validation-header">
+        <h2 id="validation-title">Save check</h2>
+        <button id="close-validation" class="btn-icon" type="button" aria-label="Close save check">✕</button>
+      </div>
+      <div id="validation-body"></div>
+      <div id="validation-actions" class="validation-actions" hidden>
+        <p>Downloads were started. Confirm only after your browser shows that the files were saved.</p>
+        <button id="confirm-downloads-btn" class="btn btn-primary" type="button">Mark downloads as saved</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ===================== Tokenizer =====================
+function tokenize(src) {
+  const tokens = [];
+  let i = 0;
+  const n = src.length;
+  const isIdentStart = c => /[A-Za-z_$]/.test(c);
+  const isIdentPart = c => /[A-Za-z0-9_$]/.test(c);
+
+  // Incremental line counter: lineScanPos only ever moves forward, so total
+  // work across all calls is O(n), not O(n) per call (which was O(n^2) overall).
+  let line = 1;
+  let lineScanPos = 0;
+  function lineOf(pos) {
+    while (lineScanPos < pos) {
+      if (src[lineScanPos] === '\n') line++;
+      lineScanPos++;
+    }
+    return line;
+  }
+
+  while (i < n) {
+    const c = src[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '/' && src[i + 1] === '/') {
+      let j = i + 2;
+      while (j < n && src[j] !== '\n') j++;
+      i = j;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      let j = i + 2;
+      while (j < n && !(src[j] === '*' && src[j + 1] === '/')) j++;
+      i = Math.min(j + 2, n);
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const quote = c;
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === quote) { j++; closed = true; break; }
+        if (src[j] === '\n') break; // unterminated on this line
+        j++;
+      }
+      tokens.push({ type: 'string', quote, raw: src.slice(i, j), start: i, end: j, closed, line: lineOf(i) });
+      i = j;
+      continue;
+    }
+    if (c === '`') {
+      let j = i + 1;
+      let hasInterp = false;
+      let closed = false;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '$' && src[j + 1] === '{') {
+          hasInterp = true;
+          j += 2;
+          let depth = 1;
+          while (j < n && depth > 0) {
+            if (src[j] === '{') depth++;
+            else if (src[j] === '}') depth--;
+            else if (src[j] === '"' || src[j] === "'") {
+              // skip nested string inside interpolation
+              const q = src[j]; j++;
+              while (j < n && src[j] !== q) { if (src[j] === '\\') j++; j++; }
+            }
+            j++;
+          }
+          continue;
+        }
+        if (src[j] === '`') { j++; closed = true; break; }
+        j++;
+      }
+      tokens.push({ type: 'template', raw: src.slice(i, j), start: i, end: j, hasInterp, closed, line: lineOf(i) });
+      i = j;
+      continue;
+    }
+    if (c === '=' && src[i + 1] === '>') { tokens.push({ type: 'arrow', start: i, end: i + 2, line: lineOf(i) }); i += 2; continue; }
+    if (c === '.' && src[i + 1] === '.' && src[i + 2] === '.') { tokens.push({ type: 'spread', start: i, end: i + 3, line: lineOf(i) }); i += 3; continue; }
+    if ('{}[]:,;()'.includes(c)) { tokens.push({ type: c, start: i, end: i + 1, line: lineOf(i) }); i++; continue; }
+    if (c === '=') { tokens.push({ type: '=', start: i, end: i + 1, line: lineOf(i) }); i++; continue; }
+    if (isIdentStart(c)) {
+      let j = i + 1;
+      while (j < n && isIdentPart(src[j])) j++;
+      tokens.push({ type: 'ident', value: src.slice(i, j), start: i, end: j, line: lineOf(i) });
+      i = j;
+      continue;
+    }
+    if (/[0-9]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[0-9.eE+-]/.test(src[j])) j++;
+      tokens.push({ type: 'number', value: src.slice(i, j), start: i, end: j, line: lineOf(i) });
+      i = j;
+      continue;
+    }
+    tokens.push({ type: 'other', value: c, start: i, end: i + 1, line: lineOf(i) });
+    i++;
+  }
+  return tokens;
+}
+
+// ===================== String decode/encode =====================
+function decodeEscapes(inner) {
+  return inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (m, esc) => {
+    if (esc[0] === 'u') {
+      if (esc[1] === '{') {
+        const code = parseInt(esc.slice(2, -1), 16);
+        return String.fromCodePoint(code);
+      }
+      return String.fromCharCode(parseInt(esc.slice(1), 16));
+    }
+    if (esc[0] === 'x') return String.fromCharCode(parseInt(esc.slice(1), 16));
+    switch (esc) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case 'r': return '\r';
+      case 'b': return '\b';
+      case 'f': return '\f';
+      case 'v': return '\v';
+      case '0': return '\0';
+      case '\n': return ''; // line continuation
+      default: return esc; // \\, \', \", \`, \$, etc.
+    }
+  });
+}
+
+function decodeStringToken(tok) {
+  const inner = tok.raw.slice(1, tok.closed ? -1 : tok.raw.length);
+  return decodeEscapes(inner);
+}
+
+function decodeTemplateToken(tok) {
+  return decodeStringToken(tok);
+}
+
+function encodeStringLiteral(value, quote) {
+  if (quote === '`') {
+    const esc = value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+    return '`' + esc + '`';
+  }
+  let out = value.replace(/\\/g, '\\\\');
+  if (quote === "'") out = out.replace(/'/g, "\\'");
+  else out = out.replace(/"/g, '\\"');
+  out = out.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+  return quote + out + quote;
+}
+
+// ===================== Object/Array literal parser =====================
+class ParseError extends Error {
+  constructor(msg, tok) {
+    super(msg + (tok ? ` (line ${tok.line})` : ''));
+    this.tok = tok;
+  }
+}
+
+const LANG_CODE_RE = /^[A-Za-z]{2,3}(?:[_-](?:[A-Za-z]{2,4}|[0-9]{3}))?$/;
+
+function skipValueTokens(tokens, pos) {
+  let depth = 0;
+  const start = pos;
+  while (pos < tokens.length) {
+    const t = tokens[pos];
+    if (t.type === '{' || t.type === '[' || t.type === '(') depth++;
+    else if (t.type === '}' || t.type === ']' || t.type === ')') {
+      if (depth === 0) break;
+      depth--;
+    } else if (depth === 0 && t.type === ',') break;
+    pos++;
+  }
+  if (pos === start && pos < tokens.length) pos++; // ensure forward progress on empty/edge value
+  return pos;
+}
+
+function parseValue(src, tokens, pos) {
+  const vt = tokens[pos];
+  if (!vt) throw new ParseError('Unexpected end of input while parsing a value', tokens[pos - 1]);
+  if (vt.type === '{') return parseObject(src, tokens, pos);
+  if (vt.type === '[') return parseArray(src, tokens, pos);
+  if (vt.type === 'string') {
+    const node = { type: 'string', raw: vt.raw, quote: vt.quote, value: decodeStringToken(vt), start: vt.start, end: vt.end };
+    node._nextPos = pos + 1;
+    return node;
+  }
+  if (vt.type === 'template' && !vt.hasInterp) {
+    const node = { type: 'string', raw: vt.raw, quote: '`', value: decodeTemplateToken(vt), start: vt.start, end: vt.end };
+    node._nextPos = pos + 1;
+    return node;
+  }
+  // opaque: template w/ interpolation, numbers, booleans, null, identifiers, arrow fns, calls, etc.
+  const end = skipValueTokens(tokens, pos);
+  const s = vt.start;
+  const e = end > pos ? tokens[end - 1].end : vt.end;
+  const node = { type: 'opaque', start: s, end: e, raw: src.slice(s, e) };
+  node._nextPos = end;
+  return node;
+}
+
+// After an entry's value, the next token MUST be ',' or the object's closing '}'.
+// This strictness is deliberate: it's what makes the post-save re-parse a real safety
+// net. A parser that silently tolerates a missing comma would happily "validate" output
+// that a real TS compiler would reject.
+function requireEntrySeparator(tokens, pos, contextTok) {
+  const nt = tokens[pos];
+  if (nt && (nt.type === ',' || nt.type === '}')) return;
+  throw new ParseError('Expected "," or "}" after this property (missing comma?)', nt || contextTok);
+}
+
+function parseObject(src, tokens, pos) {
+  const startTok = tokens[pos];
+  pos++; // consume '{'
+  const entries = [];
+  while (pos < tokens.length && tokens[pos].type !== '}') {
+    const kt = tokens[pos];
+    let keyName = null, keyOpaque = false;
+    if (kt.type === 'string') { keyName = decodeStringToken(kt); pos++; }
+    else if (kt.type === 'ident') { keyName = kt.value; pos++; }
+    else if (kt.type === 'number') { keyName = kt.value; pos++; }
+    else if (kt.type === '[') {
+      const s = pos; let depth = 0;
+      while (pos < tokens.length) {
+        if (tokens[pos].type === '[') depth++;
+        else if (tokens[pos].type === ']') { depth--; if (depth === 0) { pos++; break; } }
+        pos++;
+      }
+      keyOpaque = true;
+      keyName = src.slice(tokens[s].start, tokens[pos - 1].end);
+    } else if (kt.type === 'spread') {
+      pos++;
+      const valStart = pos;
+      pos = skipValueTokens(tokens, pos);
+      const s = tokens[valStart] ? tokens[valStart].start : kt.end;
+      const e = pos > valStart ? tokens[pos - 1].end : kt.end;
+      requireEntrySeparator(tokens, pos, kt);
+      entries.push({ key: null, keyOpaque: true, isSpread: true, node: { type: 'opaque', start: kt.start, end: e, raw: src.slice(kt.start, e) } });
+      if (tokens[pos] && tokens[pos].type === ',') pos++;
+      continue;
+    } else {
+      throw new ParseError(`Unexpected token "${kt.type}" where an object key was expected`, kt);
+    }
+
+    if (tokens[pos] && tokens[pos].type === ':') {
+      pos++; // consume ':'
+      const valNode = parseValue(src, tokens, pos);
+      pos = valNode._nextPos;
+      requireEntrySeparator(tokens, pos, kt);
+      entries.push({ key: keyName, keyOpaque, node: valNode });
+    } else {
+      // shorthand property (e.g. `{ foo }`) or method shorthand `{ foo() {...} }` - opaque
+      const valStart = pos;
+      if (tokens[pos] && tokens[pos].type === '(') {
+        // method shorthand: skip params then body
+        pos = skipValueTokens(tokens, pos); // skips the (...) as balanced
+        if (tokens[pos] && tokens[pos].type === '{') {
+          pos = skipValueTokens(tokens, pos); // skips the {...} body
+        }
+      } else {
+        pos = skipValueTokens(tokens, pos);
+      }
+      const s = tokens[valStart] ? tokens[valStart].start : kt.end;
+      const e = pos > valStart ? tokens[pos - 1].end : kt.end;
+      requireEntrySeparator(tokens, pos, kt);
+      entries.push({ key: keyName, keyOpaque, node: { type: 'opaque', start: kt.start, end: e, raw: src.slice(kt.start, e) } });
+    }
+    if (tokens[pos] && tokens[pos].type === ',') pos++;
+  }
+  if (!tokens[pos] || tokens[pos].type !== '}') {
+    throw new ParseError('Unterminated object literal (missing closing "}")', startTok);
+  }
+  const endTok = tokens[pos];
+  const node = { type: 'object', start: startTok.start, end: endTok.end, entries };
+  node._nextPos = pos + 1;
+  return node;
+}
+
+function parseArray(src, tokens, pos) {
+  const startTok = tokens[pos];
+  pos++; // consume '['
+  const items = [];
+  while (pos < tokens.length && tokens[pos].type !== ']') {
+    const valNode = parseValue(src, tokens, pos);
+    pos = valNode._nextPos;
+    const nt = tokens[pos];
+    if (!nt || (nt.type !== ',' && nt.type !== ']')) {
+      throw new ParseError('Expected "," or "]" after this array item (missing comma?)', nt || startTok);
+    }
+    items.push(valNode);
+    if (tokens[pos] && tokens[pos].type === ',') pos++;
+  }
+  if (!tokens[pos] || tokens[pos].type !== ']') {
+    throw new ParseError('Unterminated array literal (missing closing "]")', startTok);
+  }
+  const endTok = tokens[pos];
+  const node = { type: 'array', start: startTok.start, end: endTok.end, raw: src.slice(startTok.start, endTok.end), items };
+  node._nextPos = pos + 1;
+  return node;
+}
+
+// Find all top-level object-literal "roots": `export default {`, `export const NAME = {`,
+// `export const NAME: Type = {`, or bare `const NAME = {`.
+function findRoots(src) {
+  const tokens = tokenize(src);
+  const roots = [];
+  let depth = 0;
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (depth === 0 && t.type === 'ident' && t.value === 'export' && tokens[i + 1] && tokens[i + 1].type === 'ident' && tokens[i + 1].value === 'default') {
+      let j = i + 2;
+      if (tokens[j] && tokens[j].type === '{') {
+        const node = parseObject(src, tokens, j);
+        roots.push({ label: 'default', node });
+        i = node._nextPos;
+        continue;
+      }
+    }
+    if (depth === 0 && t.type === 'ident' && (t.value === 'export' || t.value === 'const') ) {
+      let j = i;
+      let hasExport = false;
+      if (tokens[j].value === 'export') { hasExport = true; j++; }
+      if (tokens[j] && tokens[j].type === 'ident' && tokens[j].value === 'const' && tokens[j + 1] && tokens[j + 1].type === 'ident') {
+        const name = tokens[j + 1].value;
+        let k = j + 2;
+        let localDepth = 0;
+        let eqPos = -1;
+        while (k < tokens.length) {
+          const tk = tokens[k];
+          if (tk.type === '{' || tk.type === '[' || tk.type === '(') localDepth++;
+          else if (tk.type === '}' || tk.type === ']' || tk.type === ')') localDepth--;
+          else if (tk.type === ';' && localDepth <= 0) break;
+          else if (tk.type === '=' && localDepth === 0) { eqPos = k; break; }
+          k++;
+        }
+        if (eqPos !== -1 && tokens[eqPos + 1] && tokens[eqPos + 1].type === '{') {
+          const node = parseObject(src, tokens, eqPos + 1);
+          roots.push({ label: name, node, exported: hasExport });
+          i = node._nextPos;
+          continue;
+        }
+      }
+    }
+    if (t.type === '{' || t.type === '[' || t.type === '(') depth++;
+    else if (t.type === '}' || t.type === ']' || t.type === ')') depth--;
+    i++;
+  }
+  return roots;
+}
+
+// ===================== Language-map heuristic =====================
+function looksLikeLanguageMap(objNode) {
+  if (!objNode.entries.length) return false;
+  const entries = objNode.entries;
+  if (!entries.every(e =>
+    !e.keyOpaque && !e.isSpread && e.key && LANG_CODE_RE.test(e.key) && e.node.type === 'object'
+  )) return false;
+
+  // Two-letter codes and region/script variants are strong locale signals. Bare
+  // three-letter keys are ambiguous with common translation sections such as
+  // `nav`, `app`, `api`, and `faq`, so require their object shapes to overlap.
+  const strongCode = /^[A-Za-z]{2}(?:[_-](?:[A-Za-z]{2,4}|[0-9]{3}))?$|^[A-Za-z]{3}[_-](?:[A-Za-z]{2,4}|[0-9]{3})$/;
+  if (entries.every(e => strongCode.test(e.key))) return true;
+  if (entries.length < 2) return false;
+  const keySets = entries.map(e => new Set(Object.keys(flatten(e.node, ''))));
+  return keySets.some((set, i) => keySets.slice(i + 1).some(other => [...set].some(key => other.has(key))));
+}
+
+// ===================== Flatten to key-path -> leaf node =====================
+function flatten(objNode, prefix, out) {
+  out = out || {};
+  for (const e of objNode.entries) {
+    if (e.isSpread) continue;
+    const keyDisplay = e.keyOpaque ? `[${e.key}]` : (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(e.key) ? e.key : JSON.stringify(e.key));
+    const path = prefix ? `${prefix}.${keyDisplay}` : keyDisplay;
+    if (e.node.type === 'object') {
+      if (e.node.entries.length === 0) {
+        out[path] = { kind: 'empty-object', node: e.node };
+      } else {
+        flatten(e.node, path, out);
+      }
+    } else if (e.node.type === 'array') {
+      out[path] = { kind: 'array', node: e.node };
+    } else if (e.node.type === 'string') {
+      out[path] = { kind: 'string', node: e.node };
+    } else {
+      out[path] = { kind: 'opaque', node: e.node };
+    }
+  }
+  return out;
+}
+
+// ===================== Apply a set of edits to source text =====================
+// edits: [{start, end, newText}]
+function applyEdits(sourceText, edits) {
+  const sorted = edits.slice().sort((a, b) => b.start - a.start);
+  let out = sourceText;
+  for (const e of sorted) {
+    out = out.slice(0, e.start) + e.newText + out.slice(e.end);
+  }
+  return out;
+}
+
+// Detect indentation to use for a new entry inserted into objNode, based on sibling entries.
+function detectIndent(src, objNode) {
+  if (objNode.entries.length > 0) {
+    const last = objNode.entries[objNode.entries.length - 1];
+    const keyStart = last.node.start; // approx; good enough since we search backward to line start
+    // find start of the entry (key start), by scanning backward from node.start to find key token start is tricky
+    // Instead: find the line containing objNode.start's first entry and measure leading whitespace of that line.
+  }
+  // Generic approach: look at the line containing the first entry (or the object's own line) and measure indent, then add one level.
+  const searchPos = objNode.entries.length > 0 ? entryKeyStart(src, objNode.entries[0]) : objNode.start;
+  const lineStart = src.lastIndexOf('\n', searchPos) + 1;
+  const indentMatch = /^[ \t]*/.exec(src.slice(lineStart));
+  let indent = indentMatch ? indentMatch[0] : '';
+  if (objNode.entries.length === 0) indent += '  ';
+  return indent;
+}
+
+function lineIndentAt(src, pos) {
+  const lineStart = src.lastIndexOf('\n', Math.max(0, pos - 1)) + 1;
+  const match = /^[ \t]*/.exec(src.slice(lineStart));
+  return match ? match[0] : '';
+}
+
+function detectIndentUnit(src, objNode) {
+  const outerIndent = lineIndentAt(src, objNode.start);
+  if (objNode.entries.length) {
+    const entryIndent = lineIndentAt(src, entryKeyStart(src, objNode.entries[0]));
+    if (entryIndent.startsWith(outerIndent) && entryIndent.length > outerIndent.length) {
+      return entryIndent.slice(outerIndent.length);
+    }
+  }
+  const nearby = /\n([ \t]+)\S/.exec(src.slice(objNode.start, objNode.end));
+  if (nearby) return nearby[1].startsWith('\t') ? '\t' : nearby[1];
+  return '  ';
+}
+
+function detectEol(src) {
+  return src.includes('\r\n') ? '\r\n' : '\n';
+}
+
+function entryKeyStart(src, entry) {
+  // Walk backward from the value node start to find the key token start (approx: find previous ':' then walk back non-ws)
+  let p = entry.node.start;
+  // find preceding ':' scanning backward
+  let colon = src.lastIndexOf(':', p);
+  if (colon === -1) return entry.node.start;
+  let q = colon - 1;
+  while (q >= 0 && /\s/.test(src[q])) q--;
+  // q now at end of key token; walk back to find its start
+  if (src[q] === '"' || src[q] === "'") {
+    const quote = src[q];
+    let s = q - 1;
+    while (s >= 0 && src[s] !== quote) s--;
+    return s;
+  }
+  let s = q;
+  while (s >= 0 && /[A-Za-z0-9_$]/.test(src[s])) s--;
+  return s + 1;
+}
+
+// Split a flattened dot-path back into raw segments (reversing the display-escaping done in flatten()).
+function splitPath(path) {
+  // segments are separated by '.' but a segment may be a JSON-quoted string (which can itself contain '.')
+  const segs = [];
+  let i = 0;
+  while (i < path.length) {
+    if (path[i] === '"') {
+      let j = i + 1;
+      while (j < path.length && path[j] !== '"') { if (path[j] === '\\') j++; j++; }
+      segs.push(JSON.parse(path.slice(i, j + 1)));
+      i = j + 2; // skip closing quote + following '.'
+    } else {
+      let j = path.indexOf('.', i);
+      if (j === -1) j = path.length;
+      segs.push(path.slice(i, j));
+      i = j + 1;
+    }
+  }
+  return segs;
+}
+
+function formatKey(seg) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(seg) ? seg : JSON.stringify(seg);
+}
+
+// Plan insertion edits for MULTIPLE missing paths into rootNode/src at once. This must be used
+// (rather than calling a single-path insert repeatedly and concatenating results) whenever more
+// than one missing key might land in the same parent object or share a not-yet-created branch:
+// independent single-path inserts would each anchor at "after the last original entry" and
+// collide, or each recreate their own copy of a shared new nested object. Batching groups
+// insertions by their real target parent and, for brand-new branches, merges shared prefixes
+// into one nested object instead of duplicating it.
+// insertions: [{path, value, quote}]. Returns [{start, end, newText}, ...] suitable for applyEdits.
+function planBatchInsertions(src, rootNode, insertions) {
+  const byParent = new Map(); // parentNode.start -> { parentNode, items: [{remaining, value, quote}] }
+  for (const ins of insertions) {
+    const segs = splitPath(ins.path);
+    let cur = rootNode;
+    let depth = 0;
+    for (; depth < segs.length - 1; depth++) {
+      const entry = cur.entries.find(e => !e.keyOpaque && e.key === segs[depth]);
+      if (!entry || entry.node.type !== 'object') break;
+      cur = entry.node;
+    }
+    const remaining = segs.slice(depth);
+    const key = cur.start;
+    if (!byParent.has(key)) byParent.set(key, { parentNode: cur, items: [] });
+    byParent.get(key).items.push({ remaining, value: ins.value, quote: ins.quote || '"' });
+  }
+
+  function buildGroup(items) {
+    const leaves = [];
+    const children = new Map(); // head -> array of child items (remaining sliced by 1)
+    for (const it of items) {
+      if (it.remaining.length === 1) {
+        leaves.push({ key: it.remaining[0], value: it.value, quote: it.quote });
+      } else {
+        const [head, ...rest] = it.remaining;
+        if (!children.has(head)) children.set(head, []);
+        children.get(head).push({ ...it, remaining: rest });
+      }
+    }
+    return { leaves, children };
+  }
+  function serializeGroup(items, indent, indentUnit, eol) {
+    const { leaves, children } = buildGroup(items);
+    const lines = leaves.map(leaf => `${indent}${formatKey(leaf.key)}: ${encodeStringLiteral(leaf.value, leaf.quote)}`);
+    for (const [key, childItems] of children.entries()) {
+      const inner = serializeGroup(childItems, indent + indentUnit, indentUnit, eol);
+      lines.push(`${indent}${formatKey(key)}: {${eol}${inner}${eol}${indent}}`);
+    }
+    return lines.join(`,${eol}`);
+  }
+
+  const edits = [];
+  for (const { parentNode, items } of byParent.values()) {
+    const eol = detectEol(src);
+    const indentUnit = detectIndentUnit(src, parentNode);
+    const outerIndent = lineIndentAt(src, parentNode.start);
+    const indent = detectIndent(src, parentNode);
+    const combinedInner = serializeGroup(items, indent, indentUnit, eol);
+    if (parentNode.entries.length === 0) {
+      edits.push({ start: parentNode.start + 1, end: parentNode.end - 1, newText: `${eol}${combinedInner}${eol}${outerIndent}` });
+    } else {
+      const last = parentNode.entries[parentNode.entries.length - 1];
+      const closePos = parentNode.end - 1;
+      const tail = src.slice(last.node.end, closePos);
+      const hasComma = tokenize(tail).some(t => t.type === ',');
+      if (!hasComma) edits.push({ start: last.node.end, end: last.node.end, newText: ',' });
+
+      // Insert on the closing-brace line, after any trailing comment belonging
+      // to the previous property. Replace only that line's closing indentation.
+      const closingLineStart = src.lastIndexOf('\n', Math.max(last.node.end, closePos - 1)) + 1;
+      const closingTrivia = src.slice(closingLineStart, closePos);
+      if (closingLineStart >= last.node.end && /^[ \t]*$/.test(closingTrivia)) {
+        const trailingComma = hasComma ? ',' : '';
+        edits.push({
+          start: closingLineStart,
+          end: closePos,
+          newText: `${combinedInner}${trailingComma}${eol}${outerIndent}`,
+        });
+      } else {
+        edits.push({ start: closePos, end: closePos, newText: `${eol}${combinedInner}${eol}${outerIndent}` });
+      }
+    }
+  }
+  return edits;
+}
+
+// Convenience single-path wrapper over planBatchInsertions. Prefer the batch version whenever
+// more than one key might be inserted into the same language/file in one save.
+function planInsertion(src, rootNode, path, value, quote) {
+  return planBatchInsertions(src, rootNode, [{ path, value, quote }])[0];
+}
+
+const I18nParserExports = {
+  tokenize, decodeStringToken, decodeTemplateToken, encodeStringLiteral,
+  parseObject, parseArray, parseValue, findRoots, looksLikeLanguageMap,
+  flatten, applyEdits, detectIndent, ParseError, LANG_CODE_RE,
+  splitPath, planInsertion, planBatchInsertions, formatKey, detectEol, detectIndentUnit
+};
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = I18nParserExports;
+}
+if (typeof window !== 'undefined') {
+  window.I18nParser = I18nParserExports;
+}
+
+</script>
+<script>
+(function (root) {
+  const P = (typeof require !== 'undefined') ? require('./parser') : root.I18nParser;
+
+  let _idCounter = 1;
+  function nextId(prefix) { return `${prefix}${_idCounter++}`; }
+
+  function inferLangFromFilename(filename) {
+    const normalized = filename.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    const base = (segments[segments.length - 1] || '').replace(/\.(ts|tsx|js|jsx|json)$/i, '');
+    const dotParts = base.split('.');
+    // A code with a region/script/numeric suffix (en-US, zh_CN, es-419) is a strong signal
+    // wherever it appears - real namespace/directory names essentially never look like this.
+    const hasSuffix = s => /^[A-Za-z]{2,3}[_-](?:[A-Za-z]{2,4}|[0-9]{3})$/.test(s);
+    if (hasSuffix(base)) return base;
+    for (let i = dotParts.length - 1; i >= 0; i--) if (hasSuffix(dotParts[i])) return dotParts[i];
+    const trailing = /[_-]([A-Za-z]{2,3}[_-](?:[A-Za-z]{2,4}|[0-9]{3}))$/.exec(base);
+    if (trailing) return trailing[1];
+    const leading = /^([A-Za-z]{2,3}[_-](?:[A-Za-z]{2,4}|[0-9]{3}))[_-]/.exec(base);
+    if (leading) return leading[1];
+    for (let i = segments.length - 2; i >= 0; i--) if (hasSuffix(segments[i])) return segments[i];
+
+    // A bare code with no suffix is only trusted at 2 letters (en, fr, ja...) - a bare 3-letter
+    // match is dropped from auto-detection because it collides too often with ordinary namespace
+    // words (nav, app, api, faq); the person can still set it manually if it's genuinely a code.
+    const bare2 = /^[A-Za-z]{2}$/;
+    if (bare2.test(base)) return base;
+    for (let i = dotParts.length - 1; i >= 0; i--) if (bare2.test(dotParts[i])) return dotParts[i];
+    const immediateParent = segments[segments.length - 2];
+    if (immediateParent && bare2.test(immediateParent)) return immediateParent;
+    return null;
+  }
+
+  const SKIP_DIR_RE = /(^|\/)(node_modules|\.git|dist|build|coverage|\.next|\.turbo|out)(\/|$)/i;
+  function shouldSkipPath(path) {
+    if (SKIP_DIR_RE.test(path)) return true;
+    if (!/\.(ts|tsx|js|jsx)$/i.test(path)) return true;
+    if (/\.(d)\.ts$/i.test(path)) return true; // type-declaration files never hold translation data
+    return false;
+  }
+
+  // Parse one uploaded file's text into { file, roots, error }
+  function ingestFile(filename, text, absolutePath) {
+    const file = { id: nextId('file-'), name: filename, text, absolutePath: absolutePath || null };
+    try {
+      const roots = P.findRoots(text);
+      return { file, roots, error: null };
+    } catch (e) {
+      return { file, roots: [], error: e.message || String(e) };
+    }
+  }
+
+  // Turn parsed roots into language units. totalFiles helps decide fallback labeling.
+  function deriveUnitsForFile(file, roots, totalFiles) {
+    const units = [];
+    roots.forEach((root, rootIdx) => {
+      const inferredFileLang = inferLangFromFilename(file.name);
+      // A locale-bearing filename such as en.ts is stronger evidence for a
+      // single-language tree than ambiguous short section names are for a map.
+      const isMap = !inferredFileLang && P.looksLikeLanguageMap(root.node);
+      if (isMap) {
+        root.node.entries.forEach(entry => {
+          if (entry.keyOpaque || entry.isSpread || entry.node.type !== 'object') return;
+          units.push({
+            id: nextId('unit-'),
+            lang: entry.key,
+            sourceLang: entry.key,
+            fileId: file.id,
+            fileName: file.name,
+            rootLabel: root.label,
+            treeNode: entry.node,
+            mode: 'map',
+            autoLang: entry.key,
+          });
+        });
+      } else {
+        let lang = inferredFileLang;
+        if (!lang) {
+          lang = (totalFiles > 1 || roots.length > 1) ? root.label : (file.name.replace(/\.(ts|tsx|js|jsx)$/i, '') || root.label);
+        }
+        units.push({
+          id: nextId('unit-'),
+          lang,
+          sourceLang: null,
+          fileId: file.id,
+          fileName: file.name,
+          rootLabel: root.label,
+          treeNode: root.node,
+          mode: 'tree',
+          autoLang: lang,
+        });
+      }
+    });
+    return units;
+  }
+
+  function flatForUnit(unit) {
+    if (!unit._flatCache) unit._flatCache = P.flatten(unit.treeNode, '');
+    return unit._flatCache;
+  }
+
+  function pickBackboneUnit(units) {
+    let backbone = units[0];
+    let backboneSize = Object.keys(flatForUnit(backbone)).length;
+    for (const u of units) {
+      const sz = Object.keys(flatForUnit(u)).length;
+      if (sz > backboneSize) { backbone = u; backboneSize = sz; }
+    }
+    return backbone;
+  }
+
+  // Build the ordered union of key paths across all units.
+  function computeUnionPaths(units) {
+    if (!units.length) return [];
+    const backbone = pickBackboneUnit(units);
+    const seen = new Set();
+    const order = [];
+    Object.keys(flatForUnit(backbone)).forEach(k => { seen.add(k); order.push(k); });
+    const extras = new Set();
+    units.forEach(u => {
+      Object.keys(flatForUnit(u)).forEach(k => { if (!seen.has(k)) extras.add(k); });
+    });
+    return order.concat([...extras].sort());
+  }
+
+  function detectPredominantQuote(unit) {
+    const flat = flatForUnit(unit);
+    const counts = { '"': 0, "'": 0, '`': 0 };
+    Object.values(flat).forEach(v => { if (v.kind === 'string') counts[v.node.quote] = (counts[v.node.quote] || 0) + 1; });
+    let best = '"', bestN = -1;
+    for (const q of ['"', "'", '`']) if (counts[q] > bestN) { bestN = counts[q]; best = q; }
+    return best;
+  }
+
+  // Get the current effective value for a unit+path, layering pending edits over parsed content.
+  function getCell(state, unit, path) {
+    const pending = state.edits[unit.id] && Object.prototype.hasOwnProperty.call(state.edits[unit.id], path)
+      ? state.edits[unit.id][path] : undefined;
+    const flat = flatForUnit(unit)[path];
+    if (pending !== undefined) {
+      const existedBefore = !!flat;
+      if (!existedBefore && pending === '') {
+        return { kind: 'missing', value: '', dirty: true, original: undefined, existedBefore: false };
+      }
+      return { kind: 'string', value: pending, dirty: true, original: flat && flat.kind === 'string' ? flat.node.value : undefined, existedBefore };
+    }
+    if (!flat) return { kind: 'missing', dirty: false };
+    if (flat.kind === 'string') return { kind: 'string', value: flat.node.value, dirty: false };
+    if (flat.kind === 'array') return { kind: 'array', raw: flat.node, dirty: false };
+    if (flat.kind === 'empty-object') return { kind: 'empty-object', dirty: false };
+    return { kind: 'opaque', raw: flat.node.raw, dirty: false };
+  }
+
+  function setCell(state, unitId, path, newValue) {
+    if (!state.edits[unitId]) state.edits[unitId] = {};
+    state.edits[unitId][path] = newValue;
+  }
+
+  function clearCell(state, unitId, path) {
+    if (state.edits[unitId]) delete state.edits[unitId][path];
+  }
+
+  function countDirty(state) {
+    let n = 0;
+    Object.values(state.edits).forEach(m => { n += Object.keys(m).length; });
+    return n;
+  }
+
+  // Compute the new source text for one file, applying all edits from all units that live in it.
+  // Returns { fileId, fileName, newText, valid, error, changes: [{unitId,lang,path,oldValue,newValue,isNew}] }
+  function computeFileOutput(state, file) {
+    const units = state.units.filter(u => u.fileId === file.id);
+    const posEdits = [];
+    const changes = [];
+    for (const unit of units) {
+      const edits = state.edits[unit.id];
+      if (!edits) continue;
+      const flat = flatForUnit(unit);
+      const quote = detectPredominantQuote(unit);
+      // Missing paths are collected and inserted as ONE batch per unit rather than one
+      // planInsertion() call per path. Independent calls each anchor at "after the last
+      // original entry" of whatever parent they resolve to - two paths landing in the same
+      // existing parent, or two paths that both need a new shared branch created, collide
+      // and produce invalid output (e.g. a missing comma, or a duplicated branch). Batching
+      // groups them by real target parent and merges shared new branches instead.
+      const pendingInsertions = [];
+      for (const path of Object.keys(edits)) {
+        const newValue = edits[path];
+        const existing = flat[path];
+        if (existing && existing.kind === 'string') {
+          if (existing.node.value === newValue) continue; // no-op edit
+          posEdits.push({ start: existing.node.start, end: existing.node.end, newText: P.encodeStringLiteral(newValue, existing.node.quote) });
+          changes.push({ unitId: unit.id, lang: unit.lang, path, oldValue: existing.node.value, newValue, isNew: false });
+        } else if (!existing) {
+          pendingInsertions.push({ path, value: newValue, quote });
+          changes.push({ unitId: unit.id, lang: unit.lang, path, oldValue: undefined, newValue, isNew: true });
+        }
+        // editing an existing array/opaque/empty-object value directly isn't offered in the UI, so no case needed here.
+      }
+      if (pendingInsertions.length) {
+        posEdits.push(...P.planBatchInsertions(file.text, unit.treeNode, pendingInsertions));
+      }
+    }
+    if (!posEdits.length) {
+      return { fileId: file.id, fileName: file.name, newText: file.text, valid: true, error: null, changes: [] };
+    }
+    const newText = P.applyEdits(file.text, posEdits);
+    // Re-parse from scratch as the verification step.
+    try {
+      const newRoots = P.findRoots(newText);
+      // Sanity-check every change actually landed where expected.
+      for (const unit of units) {
+        const edits = state.edits[unit.id];
+        if (!edits) continue;
+        // Re-locate this unit's tree within the freshly parsed roots by matching rootLabel + lang position.
+        const matchingRoot = newRoots.find(r => r.label === unit.rootLabel);
+        if (!matchingRoot) throw new P.ParseError(`Could not re-locate "${unit.rootLabel}" after edits`);
+        let newTree = matchingRoot.node;
+        if (unit.mode === 'map') {
+          const sourceLang = unit.sourceLang || unit.autoLang || unit.lang;
+          const entry = matchingRoot.node.entries.find(e => e.key === sourceLang);
+          if (!entry) throw new P.ParseError(`Could not re-locate language "${sourceLang}" after edits`);
+          newTree = entry.node;
+        }
+        const newFlat = P.flatten(newTree, '');
+        for (const path of Object.keys(edits)) {
+          const expected = edits[path];
+          const got = newFlat[path];
+          if (!got || got.kind !== 'string' || got.node.value !== expected) {
+            throw new P.ParseError(`Verification failed for key "${path}" (${unit.lang}) — value after save did not match what was entered`);
+          }
+        }
+      }
+      return { fileId: file.id, fileName: file.name, newText, valid: true, error: null, changes };
+    } catch (e) {
+      return { fileId: file.id, fileName: file.name, newText, valid: false, error: e.message || String(e), changes };
+    }
+  }
+
+  function computeAllOutputs(state) {
+    return state.files.map(f => computeFileOutput(state, f));
+  }
+
+  // A union path is worth showing as a row only if at least one unit actually has real
+  // content there. A path that exists everywhere only as an empty object (nobody has
+  // filled in a first key yet) has nothing to display or edit, so it's dropped rather
+  // than shown as a confusing row that silently discards anything typed into it.
+  function filterRenderablePaths(units, paths) {
+    return paths.filter(path => units.some(u => {
+      const f = flatForUnit(u)[path];
+      return f && (f.kind === 'string' || f.kind === 'array' || f.kind === 'opaque');
+    }));
+  }
+
+  function downloadFileName(name) {
+    const parts = name.replace(/\\/g, '/').split('/').filter(Boolean);
+    const joined = parts.length > 1 ? parts.join('__') : (parts[0] || 'translations.ts');
+    return joined.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+  }
+
+  function commitFileSave(state, fileId, newText) {
+    const idx = state.files.findIndex(f => f.id === fileId);
+    if (idx === -1) return;
+    const oldFile = state.files[idx];
+    const oldUnits = state.units.filter(u => u.fileId === fileId);
+    const firstIdx = state.units.findIndex(u => u.fileId === fileId);
+    oldUnits.forEach(u => { delete state.edits[u.id]; });
+    const { file: newFile, roots, error } = ingestFile(oldFile.name, newText, oldFile.absolutePath);
+    if (error) return;
+    state.files[idx] = newFile;
+    const newUnits = deriveUnitsForFile(newFile, roots, state.files.length);
+    if (newUnits.length === oldUnits.length) {
+      newUnits.forEach((u, i) => { u.lang = oldUnits[i].lang; });
+    }
+    const without = state.units.filter(u => u.fileId !== fileId);
+    if (firstIdx === -1) state.units = without.concat(newUnits);
+    else {
+      without.splice(firstIdx, 0, ...newUnits);
+      state.units = without;
+    }
+  }
+
+  const I18nApp = {
+    inferLangFromFilename, shouldSkipPath, ingestFile, deriveUnitsForFile, flatForUnit,
+    computeUnionPaths, filterRenderablePaths, pickBackboneUnit, detectPredominantQuote, getCell, setCell, clearCell,
+    countDirty, computeFileOutput, computeAllOutputs, downloadFileName, commitFileSave, nextId,
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = I18nApp;
+  if (typeof window !== 'undefined') window.I18nApp = I18nApp;
+})(typeof window !== 'undefined' ? window : global);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  const App = window.I18nApp;
+  const P = window.I18nParser;
+
+  const state = { files: [], units: [], edits: {} };
+  let filterMode = 'all'; // all | missing | edited
+  let searchQuery = '';
+  const collapsedGroups = new Set();
+  let pendingDownloadedOutputs = [];
+  let validationReturnFocus = null;
+
+  // ---------------------------------------------------------------- helpers
+  function el(tag, className, text) {
+    const e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function autoGrow(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = Math.max(36, ta.scrollHeight) + 'px';
+  }
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  function baseName(name) { return name.replace(/\\/g, '/').split('/').pop(); }
+  function displayFileName(name) { return name.replace(/\\/g, '/'); }
+
+  // ---------------------------------------------------------------- file loading
+  async function readFiles(fileList, useRelativePath) {
+    const loadErrors = [];
+    const before = state.units.length;
+    for (const f of Array.from(fileList)) {
+      const relPath = useRelativePath ? (f.webkitRelativePath || f.name) : f.name;
+      if (useRelativePath && App.shouldSkipPath(relPath)) continue;
+      if (!useRelativePath && !/\.(ts|tsx|js|jsx)$/i.test(f.name)) continue;
+      let text;
+      try { text = await f.text(); } catch (e) { loadErrors.push(`${relPath}: could not read file (${e.message})`); continue; }
+      const { file, roots, error } = App.ingestFile(relPath, text);
+      state.files.push(file);
+      if (error) { loadErrors.push(`${relPath}: ${error}`); continue; }
+      const units = App.deriveUnitsForFile(file, roots, fileList.length);
+      if (units.length === 0) {
+        loadErrors.push(`${relPath}: parsed fine, but no exported object literal was found (no translations detected)`);
+      }
+      state.units.push(...units);
+    }
+    renderLoadErrors(loadErrors);
+    if (state.units.length > before) {
+      document.getElementById('empty-state').hidden = true;
+      document.getElementById('loaded-view').hidden = false;
+      document.getElementById('footer-bar').hidden = false;
+    }
+    renderAll();
+  }
+
+  function renderLoadErrors(errors) {
+    const panel = document.getElementById('load-errors-panel');
+    if (!errors.length) { panel.hidden = true; panel.textContent = ''; return; }
+    panel.hidden = false;
+    panel.innerHTML = '';
+    const head = el('div', null, `Couldn't fully load ${errors.length} item${errors.length === 1 ? '' : 's'}:`);
+    panel.appendChild(head);
+    const list = el('ul');
+    errors.forEach(msg => list.appendChild(el('li', null, msg)));
+    panel.appendChild(list);
+  }
+
+  // ---------------------------------------------------------------- summary panel
+  function renderSummary() {
+    const headline = document.getElementById('summary-headline');
+    const list = document.getElementById('summary-list');
+    const fileCount = state.files.filter(f => state.units.some(u => u.fileId === f.id)).length;
+    const langCount = new Set(state.units.map(u => u.lang)).size;
+    headline.innerHTML = '';
+    headline.appendChild(document.createTextNode(''));
+    const strong1 = el('strong', null, String(fileCount));
+    headline.append(strong1, document.createTextNode(fileCount === 1 ? ' file, ' : ' files, '));
+    const strong2 = el('strong', null, String(langCount));
+    headline.append(strong2, document.createTextNode(langCount === 1 ? ' language loaded' : ' languages loaded'));
+
+    list.innerHTML = '';
+    const byFile = new Map();
+    state.units.forEach(u => {
+      if (!byFile.has(u.fileId)) byFile.set(u.fileId, []);
+      byFile.get(u.fileId).push(u);
+    });
+    for (const [fileId, units] of byFile.entries()) {
+      const file = state.files.find(f => f.id === fileId);
+      const row = el('div', 'summary-file');
+      const nameLine = el('div');
+      nameLine.appendChild(el('span', 'summary-file-name', file.name));
+      nameLine.appendChild(el('span', 'summary-file-mode', units[0].mode === 'map' ? `combined · ${units.length} language${units.length === 1 ? '' : 's'}` : 'single language'));
+      row.appendChild(nameLine);
+      const chips = el('div', 'summary-units');
+      units.forEach(u => {
+        const chip = el('span', 'unit-chip');
+        const input = document.createElement('input');
+        input.value = u.lang;
+        input.spellcheck = false;
+        input.setAttribute('aria-label', `Language label for ${displayFileName(file.name)}`);
+        input.addEventListener('change', () => { u.lang = input.value.trim() || u.lang; renderAll(); });
+        const meta = el('span', 'unit-meta', `${Object.keys(App.flatForUnit(u)).length} keys`);
+        const removeBtn = el('button', 'unit-remove', '✕');
+        removeBtn.type = 'button';
+        removeBtn.title = 'Remove this language from the editor';
+        removeBtn.setAttribute('aria-label', `Remove ${u.lang} from the editor`);
+        removeBtn.addEventListener('click', () => {
+          state.units = state.units.filter(x => x.id !== u.id);
+          delete state.edits[u.id];
+          renderAll();
+        });
+        chip.append(input, meta, removeBtn);
+        chips.appendChild(chip);
+      });
+      row.appendChild(chips);
+      list.appendChild(row);
+    }
+  }
+
+  // ---------------------------------------------------------------- grid
+  function groupOf(path) {
+    const segs = P.splitPath(path);
+    return segs.length > 1 ? segs[0] : null;
+  }
+  function labelSegments(path) {
+    const segs = P.splitPath(path);
+    return segs.length > 1 ? segs.slice(1) : segs;
+  }
+
+  function rowMatchesSearch(path, units) {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    if (path.toLowerCase().includes(q)) return true;
+    return units.some(u => {
+      const cell = App.getCell(state, u, path);
+      return cell.kind === 'string' && cell.value.toLowerCase().includes(q);
+    });
+  }
+  function rowMatchesFilter(path, units) {
+    if (filterMode === 'all') return true;
+    if (filterMode === 'missing') return units.some(u => App.getCell(state, u, path).kind === 'missing');
+    if (filterMode === 'edited') return units.some(u => App.getCell(state, u, path).dirty);
+    return true;
+  }
+
+  function updateGridMetrics(units, renderablePaths, activePath, activeRow) {
+    document.querySelectorAll('.lang-th-count').forEach((node, index) => {
+      const unit = units[index];
+      if (!unit) return;
+      const filled = renderablePaths.filter(path => App.getCell(state, unit, path).kind !== 'missing').length;
+      node.textContent = `${filled}/${renderablePaths.length}`;
+    });
+    if (activeRow && activePath) {
+      activeRow.querySelectorAll('.completeness i').forEach((dot, index) => {
+        dot.className = App.getCell(state, units[index], activePath).kind === 'missing' ? 'miss' : 'ok';
+      });
+    }
+    const statsBar = document.getElementById('stats-bar');
+    statsBar.innerHTML = '';
+    const missing = renderablePaths.filter(path => units.some(unit => App.getCell(state, unit, path).kind === 'missing')).length;
+    statsBar.appendChild(el('b', null, String(renderablePaths.length)));
+    statsBar.appendChild(document.createTextNode(' keys'));
+    if (missing) {
+      statsBar.appendChild(document.createTextNode(' · '));
+      statsBar.appendChild(el('span', 'stats-missing', `${missing} missing somewhere`));
+    }
+  }
+
+  function renderGrid() {
+    const wrap = document.getElementById('grid-wrap');
+    wrap.innerHTML = '';
+    const units = state.units;
+    if (!units.length) return;
+    const growQueue = [];
+
+    const allPaths = App.computeUnionPaths(units);
+    const renderablePaths = App.filterRenderablePaths(units, allPaths);
+    const visiblePaths = renderablePaths.filter(p => rowMatchesSearch(p, units) && rowMatchesFilter(p, units));
+
+    const table = document.createElement('table');
+    table.className = 'i18n-grid';
+    const colgroup = document.createElement('colgroup');
+    colgroup.appendChild(el('col', 'col-key'));
+    units.forEach(() => colgroup.appendChild(el('col', 'col-lang')));
+    table.appendChild(colgroup);
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    headRow.appendChild(el('th', 'key-col', 'Key'));
+    units.forEach(u => {
+      const th = document.createElement('th');
+      const total = renderablePaths.length;
+      const filled = renderablePaths.filter(p => App.getCell(state, u, p).kind !== 'missing').length;
+      const wrapDiv = el('div', 'lang-th');
+      wrapDiv.appendChild(el('span', 'lang-th-name', u.lang));
+      wrapDiv.appendChild(el('span', 'lang-th-count', `${filled}/${total}`));
+      th.appendChild(wrapDiv);
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    if (!visiblePaths.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = units.length + 1;
+      td.className = 'no-results';
+      td.textContent = searchQuery || filterMode !== 'all' ? 'No keys match your search or filter.' : 'No translatable keys found.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+
+    let lastGroup = undefined;
+    visiblePaths.forEach(path => {
+      const group = groupOf(path);
+      if (group !== lastGroup) {
+        lastGroup = group;
+        if (group !== null) {
+          const gRow = document.createElement('tr');
+          gRow.className = 'group-row' + (collapsedGroups.has(group) ? ' collapsed' : '');
+          gRow.dataset.groupHeader = group;
+          const gTd = document.createElement('td');
+          gTd.colSpan = units.length + 1;
+          gTd.appendChild(el('span', 'chev', '▾'));
+          gTd.appendChild(document.createTextNode(group));
+          gRow.appendChild(gTd);
+          gRow.addEventListener('click', () => {
+            if (collapsedGroups.has(group)) collapsedGroups.delete(group); else collapsedGroups.add(group);
+            renderGrid();
+          });
+          tbody.appendChild(gRow);
+        }
+      }
+      const hidden = group !== null && collapsedGroups.has(group);
+      const tr = document.createElement('tr');
+      if (hidden) tr.className = 'row-hidden';
+      if (group !== null) tr.dataset.group = group;
+
+      const keyTd = document.createElement('td');
+      keyTd.className = 'key-cell';
+      const keyPath = el('div', 'key-path');
+      const segs = labelSegments(path);
+      if (segs.length > 1) {
+        keyPath.appendChild(el('span', 'seg-muted', segs.slice(0, -1).join('.') + '.'));
+      }
+      keyPath.appendChild(el('span', 'seg-leaf', segs[segs.length - 1]));
+      keyTd.appendChild(keyPath);
+      const bar = el('div', 'completeness');
+      units.forEach(u => {
+        const cell = App.getCell(state, u, path);
+        bar.appendChild(el('i', cell.kind === 'missing' ? 'miss' : 'ok'));
+      });
+      keyTd.appendChild(bar);
+      tr.appendChild(keyTd);
+
+      units.forEach(u => {
+        const td = document.createElement('td');
+        td.className = 'value-cell';
+        const cell = App.getCell(state, u, path);
+        if (cell.kind === 'string' || cell.kind === 'missing') {
+          const ta = document.createElement('textarea');
+          ta.className = 'cell-textarea' + (cell.dirty ? ' dirty' : '') + (cell.kind === 'missing' ? ' is-missing' : '');
+          ta.rows = 1;
+          ta.value = cell.kind === 'string' ? cell.value : '';
+          if (cell.kind === 'missing') ta.placeholder = 'Add translation…';
+          ta.spellcheck = true;
+          ta.addEventListener('input', () => {
+            autoGrow(ta);
+            const original = App.flatForUnit(u)[path];
+            if (original && original.kind === 'string' && ta.value === original.node.value) {
+              App.clearCell(state, u.id, path);
+              ta.classList.remove('dirty');
+            } else {
+              App.setCell(state, u.id, path, ta.value);
+              ta.classList.add('dirty');
+            }
+            ta.classList.toggle('is-missing', !ta.value && !App.getCell(state, u, path).existedBefore);
+            updateFooter();
+            updateGridMetrics(units, renderablePaths, path, tr);
+          });
+          ta.addEventListener('focus', () => setRowFocus(tr));
+          td.appendChild(ta);
+          growQueue.push(ta);
+        } else if (cell.kind === 'array') {
+          const box = el('div', 'cell-readonly');
+          box.appendChild(el('span', 'tag', 'Array'));
+          box.appendChild(document.createElement('br'));
+          box.appendChild(document.createTextNode(cell.raw.raw));
+          td.appendChild(box);
+        } else if (cell.kind === 'empty-object') {
+          const box = el('div', 'cell-readonly');
+          box.appendChild(el('span', 'tag', 'Empty group'));
+          td.appendChild(box);
+        } else {
+          const box = el('div', 'cell-readonly');
+          box.appendChild(el('span', 'tag', 'Complex value'));
+          box.appendChild(document.createElement('br'));
+          box.appendChild(document.createTextNode(cell.raw));
+          td.appendChild(box);
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', (ev) => { if (ev.target === tr || ev.target.closest('td.key-cell')) setRowFocus(tr); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    // Size textareas to their content now that they're laid out in the document
+    // (scrollHeight isn't reliable before an element is attached and painted).
+    growQueue.forEach(autoGrow);
+
+    updateGridMetrics(units, renderablePaths);
+  }
+
+  function setRowFocus(tr) {
+    document.querySelectorAll('tr.row-focus').forEach(r => r.classList.remove('row-focus'));
+    tr.classList.add('row-focus');
+  }
+
+  // ---------------------------------------------------------------- footer / validation
+  function updateFooter() {
+    const n = App.countDirty(state);
+    document.getElementById('dirty-count').textContent = `${n} unsaved change${n === 1 ? '' : 's'}`;
+    renderDownloadList();
+  }
+
+  function renderDownloadList() {
+    const list = document.getElementById('download-list');
+    list.innerHTML = '';
+    const changedFileIds = new Set(Object.keys(state.edits).filter(uid => Object.keys(state.edits[uid]).length > 0)
+      .map(uid => { const u = state.units.find(x => x.id === uid); return u && u.fileId; }).filter(Boolean));
+    if (!changedFileIds.size) return;
+    if (changedFileIds.size > 1) {
+      const allBtn = el('button', 'btn dl-btn', 'Download all changed');
+      allBtn.type = 'button';
+      allBtn.addEventListener('click', () => downloadFiles([...changedFileIds]));
+      list.appendChild(allBtn);
+    }
+    changedFileIds.forEach(fileId => {
+      const file = state.files.find(f => f.id === fileId);
+      const btn = el('button', 'btn dl-btn');
+      btn.type = 'button';
+      const dot = el('span', 'dl-status dirty');
+      btn.appendChild(dot);
+      btn.appendChild(document.createTextNode(displayFileName(file.name)));
+      btn.addEventListener('click', () => downloadFiles([fileId]));
+      list.appendChild(btn);
+    });
+  }
+
+  function downloadFiles(fileIds) {
+    const outputs = fileIds.map(id => App.computeFileOutput(state, state.files.find(f => f.id === id)));
+    openValidationOverlay(outputs, true);
+  }
+
+  // After a successful save, re-ingest the file's new text as the new baseline so positions
+  // stay valid for the next edit and dirty/edited state clears. Best-effort preserves any
+  // manually-renamed language labels by position, since saving never adds/removes/reorders
+  // the language-level keys themselves - only edits values within them.
+
+  function openValidationOverlay(outputs, downloadIfValid) {
+    const body = document.getElementById('validation-body');
+    const actions = document.getElementById('validation-actions');
+    pendingDownloadedOutputs = [];
+    actions.hidden = true;
+    body.innerHTML = '';
+    outputs.forEach(out => {
+      const box = el('div', 'v-file ' + (out.valid ? 'v-ok' : 'v-bad'));
+      const head = el('div', 'v-file-head');
+      head.appendChild(el('span', 'v-badge ' + (out.valid ? 'ok' : 'bad'), out.valid ? 'Valid' : 'Error'));
+      head.appendChild(el('span', 'fname', displayFileName(out.fileName)));
+      head.appendChild(el('span', null, out.changes.length ? ` — ${out.changes.length} change${out.changes.length === 1 ? '' : 's'}` : ' — no changes'));
+      box.appendChild(head);
+      if (!out.valid) {
+        box.appendChild(el('div', 'v-error-detail', out.error));
+      } else if (out.changes.length) {
+        const details = document.createElement('details');
+        details.open = outputs.length === 1;
+        details.className = 'v-changes';
+        details.appendChild(el('summary', null, `Review ${out.changes.length} change${out.changes.length === 1 ? '' : 's'}`));
+        out.changes.forEach(ch => {
+          const row = el('div', 'v-change-row');
+          row.appendChild(el('span', 'lang', ch.lang));
+          row.appendChild(el('span', 'path', ch.path));
+          row.appendChild(el('span', 'old', ch.isNew ? '(new)' : ch.oldValue));
+          row.appendChild(el('span', 'new', ch.newValue));
+          details.appendChild(row);
+        });
+        box.appendChild(details);
+      }
+      body.appendChild(box);
+    });
+    const overlay = document.getElementById('validation-overlay');
+    validationReturnFocus = document.activeElement;
+    overlay.hidden = false;
+    document.getElementById('close-validation').focus();
+
+    if (downloadIfValid && outputs.every(o => o.valid)) {
+      pendingDownloadedOutputs = outputs.filter(out => out.changes.length);
+      pendingDownloadedOutputs.forEach(out => {
+        if (out.changes.length) {
+          downloadText(App.downloadFileName(out.fileName), out.newText);
+        }
+      });
+      actions.hidden = pendingDownloadedOutputs.length === 0;
+    }
+  }
+
+  function closeValidationOverlay() {
+    document.getElementById('validation-overlay').hidden = true;
+    pendingDownloadedOutputs = [];
+    renderGrid();
+    if (validationReturnFocus && validationReturnFocus.isConnected) validationReturnFocus.focus();
+    validationReturnFocus = null;
+  }
+
+  function renderAll() {
+    renderSummary();
+    renderGrid();
+    updateFooter();
+  }
+
+  // ---------------------------------------------------------------- wiring
+  document.getElementById('load-files-btn').addEventListener('click', () => document.getElementById('file-input').click());
+  document.getElementById('empty-load-files').addEventListener('click', () => document.getElementById('file-input').click());
+  document.getElementById('load-folder-btn').addEventListener('click', () => document.getElementById('folder-input').click());
+  document.getElementById('empty-load-folder').addEventListener('click', () => document.getElementById('folder-input').click());
+  document.getElementById('file-input').addEventListener('change', (e) => { readFiles(e.target.files, false); e.target.value = ''; });
+  document.getElementById('folder-input').addEventListener('change', (e) => { readFiles(e.target.files, true); e.target.value = ''; });
+
+  document.getElementById('search-input').addEventListener('input', (e) => { searchQuery = e.target.value; renderGrid(); });
+  document.querySelectorAll('.filter-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.filter-chip').forEach(c => {
+        c.classList.remove('active');
+        c.setAttribute('aria-selected', 'false');
+      });
+      chip.classList.add('active');
+      chip.setAttribute('aria-selected', 'true');
+      filterMode = chip.dataset.filter;
+      renderGrid();
+    });
+  });
+
+  document.getElementById('summary-toggle').addEventListener('click', () => {
+    const collapsed = document.getElementById('summary-panel').classList.toggle('collapsed');
+    document.getElementById('summary-toggle').setAttribute('aria-expanded', String(!collapsed));
+  });
+
+  document.getElementById('check-all-btn').addEventListener('click', () => {
+    const outputs = App.computeAllOutputs(state).filter(o => o.changes.length > 0 || state.files.length <= 6);
+    openValidationOverlay(outputs.length ? outputs : App.computeAllOutputs(state), false);
+  });
+  document.getElementById('close-validation').addEventListener('click', closeValidationOverlay);
+  document.getElementById('confirm-downloads-btn').addEventListener('click', () => {
+    pendingDownloadedOutputs.forEach(out => App.commitFileSave(state, out.fileId, out.newText));
+    pendingDownloadedOutputs = [];
+    document.getElementById('validation-overlay').hidden = true;
+    validationReturnFocus = null;
+    renderAll();
+  });
+  document.getElementById('validation-overlay').addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeValidationOverlay();
+  });
+  document.addEventListener('keydown', (event) => {
+    const overlay = document.getElementById('validation-overlay');
+    if (overlay.hidden) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeValidationOverlay();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+      .filter(node => !node.hidden && node.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  });
+
+  window.addEventListener('beforeunload', (event) => {
+    if (App.countDirty(state) === 0) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  // expose for smoke testing
+  window.__i18nTestHooks = { state, renderAll, App, P };
+})();
+
+</script>
+</body>
+</html>
