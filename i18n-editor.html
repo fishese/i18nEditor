@@ -1344,6 +1344,7 @@ if (typeof window !== 'undefined') {
   let gridScrollBound = false;
   let lastUnitsSig = '';
   let lastWindowSig = '';
+  let rendering = false;
   let pendingDownloadedOutputs = [];
   let validationReturnFocus = null;
 
@@ -1635,13 +1636,19 @@ if (typeof window !== 'undefined') {
   }
 
   function renderGrid(opts) {
+    if (rendering) return;
     const keepScroll = !!(opts && opts.keepScroll);
     const wrap = document.getElementById('grid-wrap');
     const units = state.units;
     if (!units.length) {
-      wrap.innerHTML = '';
-      lastUnitsSig = '';
-      lastWindowSig = '';
+      rendering = true;
+      try {
+        wrap.innerHTML = '';
+        lastUnitsSig = '';
+        lastWindowSig = '';
+      } finally {
+        rendering = false;
+      }
       return;
     }
 
@@ -1664,59 +1671,64 @@ if (typeof window !== 'undefined') {
     }
 
     const unitsChanged = !existingTable || lastUnitsSig !== unitSig;
-    let table;
-    let tbody;
-    if (unitsChanged) {
-      wrap.innerHTML = '';
-      table = document.createElement('table');
-      table.className = 'i18n-grid';
-      const colgroup = document.createElement('colgroup');
-      colgroup.appendChild(el('col', 'col-key'));
-      units.forEach(() => colgroup.appendChild(el('col', 'col-lang')));
-      table.appendChild(colgroup);
+    rendering = true;
+    try {
+      let table;
+      let tbody;
+      if (unitsChanged) {
+        wrap.innerHTML = '';
+        table = document.createElement('table');
+        table.className = 'i18n-grid';
+        const colgroup = document.createElement('colgroup');
+        colgroup.appendChild(el('col', 'col-key'));
+        units.forEach(() => colgroup.appendChild(el('col', 'col-lang')));
+        table.appendChild(colgroup);
 
-      const thead = document.createElement('thead');
-      const headRow = document.createElement('tr');
-      headRow.appendChild(el('th', 'key-col', 'Key'));
-      units.forEach(u => {
-        const th = document.createElement('th');
-        const total = renderablePaths.length;
-        const filled = renderablePaths.filter(p => App.getCell(state, u, p).kind !== 'missing').length;
-        const wrapDiv = el('div', 'lang-th');
-        wrapDiv.appendChild(el('span', 'lang-th-name', u.lang));
-        wrapDiv.appendChild(el('span', 'lang-th-count', `${filled}/${total}`));
-        th.appendChild(wrapDiv);
-        headRow.appendChild(th);
-      });
-      thead.appendChild(headRow);
-      table.appendChild(thead);
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        headRow.appendChild(el('th', 'key-col', 'Key'));
+        units.forEach(u => {
+          const th = document.createElement('th');
+          const total = renderablePaths.length;
+          const filled = renderablePaths.filter(p => App.getCell(state, u, p).kind !== 'missing').length;
+          const wrapDiv = el('div', 'lang-th');
+          wrapDiv.appendChild(el('span', 'lang-th-name', u.lang));
+          wrapDiv.appendChild(el('span', 'lang-th-count', `${filled}/${total}`));
+          th.appendChild(wrapDiv);
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
 
-      tbody = document.createElement('tbody');
-      table.appendChild(tbody);
-      wrap.appendChild(table);
-    } else {
-      table = existingTable;
-      tbody = table.querySelector('tbody');
-      if (!tbody) {
         tbody = document.createElement('tbody');
         table.appendChild(tbody);
+        wrap.appendChild(table);
+      } else {
+        table = existingTable;
+        tbody = table.querySelector('tbody');
+        if (!tbody) {
+          tbody = document.createElement('tbody');
+          table.appendChild(tbody);
+        }
       }
-    }
 
-    fillWindowBody(tbody, visiblePaths, win, slice, units, renderablePaths, growQueue, colSpan);
-    wrap.scrollTop = keepScroll ? prevScroll : 0;
-    growQueue.forEach(autoGrow);
-    tbody.querySelectorAll('tr[data-path], tr[data-group-header]').forEach(tr => {
-      const key = tr.dataset.path ? `k:${tr.dataset.path}` : `g:${tr.dataset.groupHeader}`;
-      heightCache.set(key, tr.getBoundingClientRect().height);
-    });
-    updateGridMetrics(units, renderablePaths);
-    lastUnitsSig = unitSig;
-    lastWindowSig = winSig;
+      fillWindowBody(tbody, visiblePaths, win, slice, units, renderablePaths, growQueue, colSpan);
+      wrap.scrollTop = keepScroll ? prevScroll : 0;
+      growQueue.forEach(autoGrow);
+      tbody.querySelectorAll('tr[data-path], tr[data-group-header]').forEach(tr => {
+        const key = tr.dataset.path ? `k:${tr.dataset.path}` : `g:${tr.dataset.groupHeader}`;
+        heightCache.set(key, tr.getBoundingClientRect().height);
+      });
+      updateGridMetrics(units, renderablePaths);
+      lastUnitsSig = unitSig;
+      lastWindowSig = winSig;
 
-    if (!gridScrollBound) {
-      gridScrollBound = true;
-      wrap.addEventListener('scroll', () => { renderGrid({ keepScroll: true }); }, { passive: true });
+      if (!gridScrollBound) {
+        gridScrollBound = true;
+        wrap.addEventListener('scroll', () => { renderGrid({ keepScroll: true }); }, { passive: true });
+      }
+    } finally {
+      rendering = false;
     }
   }
 
