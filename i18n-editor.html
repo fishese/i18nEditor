@@ -1334,6 +1334,10 @@ if (typeof window !== 'undefined') {
   'use strict';
   const App = window.I18nApp;
   const P = window.I18nParser;
+  const tauri = typeof window !== 'undefined' ? window.__TAURI__ : null;
+  function invoke(cmd, args) {
+    return tauri.core.invoke(cmd, args);
+  }
 
   const state = { files: [], units: [], edits: {} };
   let filterMode = 'all'; // all | missing | edited
@@ -1389,6 +1393,29 @@ if (typeof window !== 'undefined') {
       }
       state.units.push(...units);
     }
+    renderLoadErrors(loadErrors);
+    if (state.units.length > before) {
+      document.getElementById('empty-state').hidden = true;
+      document.getElementById('loaded-view').hidden = false;
+      document.getElementById('footer-bar').hidden = false;
+    }
+    renderAll();
+  }
+
+  function ingestLoadedBatch(batch) {
+    const loadErrors = (batch.errors || []).slice();
+    const before = state.units.length;
+    const items = batch.files || [];
+    items.forEach(item => {
+      const { file, roots, error } = App.ingestFile(item.relativePath, item.text, item.absolutePath);
+      state.files.push(file);
+      if (error) { loadErrors.push(`${item.relativePath}: ${error}`); return; }
+      const units = App.deriveUnitsForFile(file, roots, items.length);
+      if (units.length === 0) {
+        loadErrors.push(`${item.relativePath}: parsed fine, but no exported object literal was found (no translations detected)`);
+      }
+      state.units.push(...units);
+    });
     renderLoadErrors(loadErrors);
     if (state.units.length > before) {
       document.getElementById('empty-state').hidden = true;
@@ -1751,7 +1778,7 @@ if (typeof window !== 'undefined') {
       .map(uid => { const u = state.units.find(x => x.id === uid); return u && u.fileId; }).filter(Boolean));
     if (!changedFileIds.size) return;
     if (changedFileIds.size > 1) {
-      const allBtn = el('button', 'btn dl-btn', 'Download all changed');
+      const allBtn = el('button', 'btn dl-btn', tauri ? 'Save all changed' : 'Download all changed');
       allBtn.type = 'button';
       allBtn.addEventListener('click', () => downloadFiles([...changedFileIds]));
       list.appendChild(allBtn);
@@ -1815,13 +1842,25 @@ if (typeof window !== 'undefined') {
     overlay.hidden = false;
     document.getElementById('close-validation').focus();
 
+    const actionsCopy = document.querySelector('#validation-actions p');
+    const confirmBtn = document.getElementById('confirm-downloads-btn');
+    if (tauri) {
+      actionsCopy.textContent = 'Review looks good. Write files overwrites the original paths on disk.';
+      confirmBtn.textContent = 'Write files';
+    } else {
+      actionsCopy.textContent = 'Downloads were started. Confirm only after your browser shows that the files were saved.';
+      confirmBtn.textContent = 'Mark downloads as saved';
+    }
+
     if (downloadIfValid && outputs.every(o => o.valid)) {
       pendingDownloadedOutputs = outputs.filter(out => out.changes.length);
-      pendingDownloadedOutputs.forEach(out => {
-        if (out.changes.length) {
-          downloadText(App.downloadFileName(out.fileName), out.newText);
-        }
-      });
+      if (!tauri) {
+        pendingDownloadedOutputs.forEach(out => {
+          if (out.changes.length) {
+            downloadText(App.downloadFileName(out.fileName), out.newText);
+          }
+        });
+      }
       actions.hidden = pendingDownloadedOutputs.length === 0;
     }
   }
@@ -1842,12 +1881,24 @@ if (typeof window !== 'undefined') {
   }
 
   // ---------------------------------------------------------------- wiring
-  document.getElementById('load-files-btn').addEventListener('click', () => document.getElementById('file-input').click());
-  document.getElementById('empty-load-files').addEventListener('click', () => document.getElementById('file-input').click());
-  document.getElementById('load-folder-btn').addEventListener('click', () => document.getElementById('folder-input').click());
-  document.getElementById('empty-load-folder').addEventListener('click', () => document.getElementById('folder-input').click());
-  document.getElementById('file-input').addEventListener('change', (e) => { readFiles(e.target.files, false); e.target.value = ''; });
-  document.getElementById('folder-input').addEventListener('change', (e) => { readFiles(e.target.files, true); e.target.value = ''; });
+  async function loadViaTauri(cmd) {
+    const batch = await invoke(cmd);
+    ingestLoadedBatch(batch || { files: [], errors: [] });
+  }
+
+  if (tauri) {
+    document.getElementById('load-files-btn').addEventListener('click', () => loadViaTauri('pick_files'));
+    document.getElementById('empty-load-files').addEventListener('click', () => loadViaTauri('pick_files'));
+    document.getElementById('load-folder-btn').addEventListener('click', () => loadViaTauri('pick_folder'));
+    document.getElementById('empty-load-folder').addEventListener('click', () => loadViaTauri('pick_folder'));
+  } else {
+    document.getElementById('load-files-btn').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('empty-load-files').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('load-folder-btn').addEventListener('click', () => document.getElementById('folder-input').click());
+    document.getElementById('empty-load-folder').addEventListener('click', () => document.getElementById('folder-input').click());
+    document.getElementById('file-input').addEventListener('change', (e) => { readFiles(e.target.files, false); e.target.value = ''; });
+    document.getElementById('folder-input').addEventListener('change', (e) => { readFiles(e.target.files, true); e.target.value = ''; });
+  }
 
   document.getElementById('search-input').addEventListener('input', (e) => {
     searchQuery = e.target.value;
@@ -1877,8 +1928,33 @@ if (typeof window !== 'undefined') {
     openValidationOverlay(outputs.length ? outputs : App.computeAllOutputs(state), false);
   });
   document.getElementById('close-validation').addEventListener('click', closeValidationOverlay);
-  document.getElementById('confirm-downloads-btn').addEventListener('click', () => {
-    pendingDownloadedOutputs.forEach(out => App.commitFileSave(state, out.fileId, out.newText));
+  document.getElementById('confirm-downloads-btn').addEventListener('click', async () => {
+    if (!tauri) {
+      pendingDownloadedOutputs.forEach(out => App.commitFileSave(state, out.fileId, out.newText));
+      pendingDownloadedOutputs = [];
+      document.getElementById('validation-overlay').hidden = true;
+      validationReturnFocus = null;
+      renderAll();
+      return;
+    }
+    const body = document.getElementById('validation-body');
+    for (const out of pendingDownloadedOutputs) {
+      const file = state.files.find(f => f.id === out.fileId);
+      if (!file || !file.absolutePath) {
+        const box = el('div', 'v-file v-bad');
+        box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: no original path to write`));
+        body.appendChild(box);
+        continue;
+      }
+      const result = await invoke('write_file', { absolutePath: file.absolutePath, text: out.newText });
+      if (result && result.ok) {
+        App.commitFileSave(state, out.fileId, out.newText);
+      } else {
+        const box = el('div', 'v-file v-bad');
+        box.appendChild(el('div', 'v-error-detail', `${displayFileName(out.fileName)}: ${result && result.error ? result.error : 'write failed'}`));
+        body.appendChild(box);
+      }
+    }
     pendingDownloadedOutputs = [];
     document.getElementById('validation-overlay').hidden = true;
     validationReturnFocus = null;
