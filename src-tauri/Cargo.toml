@@ -1,0 +1,14 @@
+[package]
+name = "i18n-editor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "i18n_editor"
+path = "src/files.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
